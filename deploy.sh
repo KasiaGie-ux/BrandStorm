@@ -5,9 +5,9 @@ set -euo pipefail
 # Usage: ./deploy.sh
 # Requires: gcloud CLI authenticated, Docker running
 
-PROJECT_ID="${GCP_PROJECT:-brand-in-a-box}"
+PROJECT_ID="${GCP_PROJECT:-brandstorm}"
 REGION="${GCP_REGION:-us-central1}"
-SERVICE_NAME="brand-in-a-box"
+SERVICE_NAME="brandstorm"
 IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/brand-in-a-box/$SERVICE_NAME"
 SA_NAME="brand-agent"
 SA_EMAIL="$SA_NAME@$PROJECT_ID.iam.gserviceaccount.com"
@@ -52,7 +52,7 @@ gcloud auth configure-docker "$REGION-docker.pkg.dev" --quiet
 
 # --- Cloud Storage ---
 echo "🪣 Setting up storage buckets..."
-for BUCKET in "bb-uploads-$PROJECT_ID" "bb-assets-$PROJECT_ID"; do
+for BUCKET in "bs-uploads-$PROJECT_ID" "bs-assets-$PROJECT_ID"; do
   gsutil ls -b "gs://$BUCKET" 2>/dev/null || \
     gsutil mb -l "$REGION" -p "$PROJECT_ID" "gs://$BUCKET"
   gsutil lifecycle set <(echo '{"rule":[{"action":{"type":"Delete"},"condition":{"age":7}}]}') "gs://$BUCKET"

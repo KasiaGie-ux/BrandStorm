@@ -2,7 +2,7 @@
 import os
 
 # GCP
-GCP_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "brand-in-a-box")
+GCP_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "brandstorm-2026")
 GCP_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 USE_VERTEX_AI = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "true").lower() == "true"
 
@@ -15,7 +15,7 @@ TEXT_MODEL = os.getenv("TEXT_MODEL", "gemini-3.1-pro-preview")              # La
 TEXT_MODEL_FALLBACK = os.getenv("TEXT_MODEL_FALLBACK", "gemini-2.5-pro")    # Stable, GA
 
 # === Live API (voice conversation) ===
-LIVE_API_MODEL = os.getenv("LIVE_API_MODEL", "gemini-live-2.5-flash-native-audio")          # Vertex AI GA — HD voices, barge-in
+LIVE_API_MODEL = os.getenv("LIVE_API_MODEL", "gemini-live-2.5-flash-native-audio")          # Vertex AI GA name. Dev API equivalent: gemini-2.5-flash-native-audio-preview-12-2025
 LIVE_API_MODEL_DEV = os.getenv("LIVE_API_MODEL_DEV", "gemini-2.5-flash-native-audio-preview-12-2025")  # Dev API preview
 LIVE_API_FALLBACK = os.getenv("LIVE_API_FALLBACK", "gemini-2.5-flash")      # Basic Live API, worse voice
 
