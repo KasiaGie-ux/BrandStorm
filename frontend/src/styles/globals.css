@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+/* ─── Editorial Swiss (WOW Edition) ─── */
+@theme {
+  --color-red: #e63946;
+  --color-cream: #faf6f1;
+  --color-ink: #1a1a1a;
+  --color-muted: rgba(0,0,0,0.35);
+  --color-faint: rgba(0,0,0,0.15);
+  --color-line: rgba(0,0,0,0.07);
+
+  --font-display: 'Bebas Neue', sans-serif;
+  --font-body: 'Syne', sans-serif;
+  --font-mono: 'Syne', monospace;
+}
+
+/* ─── Base Reset ─── */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--font-body);
+  color: var(--color-ink);
+  background: var(--color-cream);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+/* ─── Selection ─── */
+::selection {
+  background: var(--color-red);
+  color: #fff;
+}
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-thumb { background: var(--color-red); border-radius: 0; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ─── Inputs ─── */
+input::placeholder, textarea::placeholder {
+  color: var(--color-faint);
+}
+input:focus, textarea:focus { outline: none; }
+
+/* ─── Focus-visible ─── */
+button:focus-visible, a:focus-visible, input:focus-visible {
+  outline: 2px solid var(--color-red);
+  outline-offset: 2px;
+}
+
+/* ─── Mobile ─── */
+@media (max-width: 480px) {
+  body { font-size: 14px; }
+}
+
+/* ─── Keyframes ─── */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-50%); }
+}
+
+@keyframes pulse {
+  0% { transform: scale(0.5); opacity: 0.6; }
+  100% { transform: scale(2.5); opacity: 0; }
+}
+
+@keyframes shimmer {
+  0%, 100% { transform: translateX(-100%); }
+  50% { transform: translateX(100%); }
+}

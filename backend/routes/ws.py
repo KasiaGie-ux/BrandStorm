@@ -50,6 +50,14 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
                 f"Model: {LIVE_API_MODEL} | Tools: {tool_count}"
             )
 
+            # Send session_ready immediately — some Live API models
+            # (e.g. gemini-2.0-flash-live-preview-04-09) do NOT emit
+            # setup_complete, so we can't wait for it.
+            await send_json(ws, {"type": "session_ready"})
+            logger.info(
+                f"[{session_id}] Phase: INIT | Action: session_ready_sent"
+            )
+
             receive_task = asyncio.create_task(
                 receive_loop(ws, live_session, session),
                 name="receive",

@@ -65,7 +65,8 @@ TOOL_DECLARATIONS = types.Tool(
             name="generate_palette",
             description=(
                 "Generate a 5-color brand palette based on product analysis "
-                "and brand direction. Returns HEX values with roles."
+                "and brand direction. You MUST provide the colors array with "
+                "hex values, roles, and names."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -83,8 +84,31 @@ TOOL_DECLARATIONS = types.Tool(
                         type=types.Type.STRING,
                         description="Visual style anchor.",
                     ),
+                    "colors": types.Schema(
+                        type=types.Type.ARRAY,
+                        description="The 5 brand colors with hex, role, and name.",
+                        items=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "hex": types.Schema(
+                                    type=types.Type.STRING,
+                                    description="Hex color code e.g. #1a1a2e",
+                                ),
+                                "role": types.Schema(
+                                    type=types.Type.STRING,
+                                    enum=["primary", "secondary", "accent", "neutral", "background"],
+                                    description="Color role in the palette.",
+                                ),
+                                "name": types.Schema(
+                                    type=types.Type.STRING,
+                                    description="Creative color name e.g. Deep Ink",
+                                ),
+                            },
+                            required=["hex", "role", "name"],
+                        ),
+                    ),
                 },
-                required=["mood", "style_anchor"],
+                required=["mood", "style_anchor", "colors"],
             ),
         ),
         types.FunctionDeclaration(
@@ -174,7 +198,15 @@ def build_live_config() -> types.LiveConnectConfig:
 
 def image_bytes_to_part(image_bytes: bytes, mime_type: str = "image/jpeg") -> types.Part:
     """Convert raw image bytes to a genai Part for sending to Live API."""
-    return types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+    if not image_bytes:
+        raise ValueError("image_bytes is empty — cannot create Part from empty data")
+    part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+    logger.info(
+        f"Created image Part | Size: {len(image_bytes)} bytes | MIME: {mime_type} | "
+        f"Part type: {type(part).__name__} | "
+        f"Has inline_data: {part.inline_data is not None}"
+    )
+    return part
 
 
 def load_image_from_path(image_path: str) -> tuple[types.Part, str]:

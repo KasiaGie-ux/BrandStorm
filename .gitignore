@@ -35,5 +35,11 @@ CLAUDE.md
 *.md
 docs/
 
+# Generated assets (session-specific binary output)
+backend/generated_assets/
+
+# Screenshots (dev reference)
+*.png
+
 # Logs
 *.log

@@ -15,6 +15,7 @@ from config import SESSION_TIMEOUT_SEC
 from models.session import AgentPhase, Session
 from services import brand_state
 from services.gemini_live import image_bytes_to_part
+from services.text_parser import parse_agent_text
 from services.tool_executor import ToolExecutor
 
 logger = logging.getLogger("brand-agent")
@@ -24,8 +25,10 @@ async def send_json(ws: WebSocket, data: dict) -> None:
     """Send JSON to frontend, silently ignore if closed."""
     try:
         await ws.send_json(data)
-    except Exception:
-        logger.debug("WebSocket send failed (client likely disconnected)")
+        if data.get("type") in ("image_generated", "palette_ready", "generation_complete"):
+            logger.info(f"[WS→FE] Sent {data['type']} | keys={list(data.keys())}")
+    except Exception as e:
+        logger.warning(f"WebSocket send failed: {e} | type={data.get('type')}")
 
 
 async def receive_loop(
@@ -69,17 +72,63 @@ async def receive_loop(
             elif msg_type == "image_upload":
                 image_b64 = msg.get("data", "")
                 mime_type = msg.get("mime_type", "image/jpeg")
+
+                if not image_b64:
+                    logger.error(
+                        f"[{session.id}] Phase: {session.phase.value} | "
+                        f"Action: image_upload_empty | Error: base64 data field is empty"
+                    )
+                    await send_json(ws, {
+                        "type": "error",
+                        "message": "Image upload failed: no image data received.",
+                    })
+                    continue
+
+                # Strip data-URL prefix if frontend accidentally includes it
+                if image_b64.startswith("data:"):
+                    logger.warning(
+                        f"[{session.id}] Phase: {session.phase.value} | "
+                        f"Action: stripping_data_url_prefix | "
+                        f"Prefix: {image_b64[:50]}"
+                    )
+                    # data:image/jpeg;base64,/9j/4AAQ...
+                    _, image_b64 = image_b64.split(",", 1)
+
                 image_bytes = base64.b64decode(image_b64)
+                header_hex = image_bytes[:8].hex()
+                logger.info(
+                    f"[{session.id}] Phase: {session.phase.value} | "
+                    f"Action: image_upload_received | "
+                    f"Size: {len(image_bytes)} bytes ({len(image_bytes) / 1024:.0f}KB) | "
+                    f"MIME: {mime_type} | Base64 length: {len(image_b64)} | "
+                    f"Header: {header_hex}"
+                )
+
+                if len(image_bytes) < 100:
+                    logger.error(
+                        f"[{session.id}] Phase: {session.phase.value} | "
+                        f"Action: image_too_small | Size: {len(image_bytes)} bytes | "
+                        f"Error: decoded image suspiciously small, likely corrupt"
+                    )
+                    await send_json(ws, {
+                        "type": "error",
+                        "message": "Image upload failed: image data appears corrupt.",
+                    })
+                    continue
+
                 session.product_image_bytes = image_bytes
                 session.product_image_mime = mime_type
 
                 image_part = image_bytes_to_part(image_bytes, mime_type)
-                prompt = msg.get("prompt", "Analyze this product and create a complete brand kit.")
-
-                logger.info(
-                    f"[{session.id}] Phase: {session.phase.value} | "
-                    f"Action: image_upload_received | Size: {len(image_bytes) / 1024:.0f}KB"
+                user_context = msg.get("context", "")
+                prompt = (
+                    "Here is the product photo. Start immediately — analyze what you see, "
+                    "propose your creative directions, recommend your top pick, then start "
+                    "generating the full brand kit. Go."
                 )
+                if user_context:
+                    prompt += f"\n\nAdditional context from the client: {user_context}"
+
                 await live_session.send_client_content(
                     turns=[types.Content(
                         role="user",
@@ -91,8 +140,17 @@ async def receive_loop(
                 brand_state.transition_phase(session, AgentPhase.ANALYZING)
                 logger.info(
                     f"[{session.id}] Phase: {session.phase.value} | "
-                    f"Action: image_forwarded_to_live_api"
+                    f"Action: image_forwarded_to_live_api | "
+                    f"Image: {len(image_bytes)} bytes | MIME: {mime_type}"
                 )
+
+            elif msg_type == "stop_session":
+                logger.info(
+                    f"[{session.id}] Phase: {session.phase.value} | "
+                    f"Action: stop_requested_by_client"
+                )
+                await send_json(ws, {"type": "session_stopped"})
+                return  # Exit receive_loop cleanly, triggers task cancellation
 
             else:
                 logger.warning(
@@ -126,6 +184,7 @@ async def agent_loop(
     or explicit error.
     """
     agent_text_buffer: list[str] = []
+    seen_event_types: set[str] = set()  # dedup across turns
     msg_count = 0
     turn_count = 0
     session_active = True
@@ -147,7 +206,7 @@ async def agent_loop(
                 async for message in live_session.receive():
                     msg_count += 1
 
-                    logger.debug(
+                    logger.info(
                         f"[{session.id}] Raw msg #{msg_count} | "
                         f"server_content={message.server_content is not None} | "
                         f"tool_call={message.tool_call is not None} | "
@@ -157,6 +216,16 @@ async def agent_loop(
                     # Server content: audio, text, transcription
                     if message.server_content:
                         sc = message.server_content
+                        has_turn = sc.model_turn is not None
+                        has_parts = has_turn and sc.model_turn.parts
+                        has_transcript = sc.output_transcription and sc.output_transcription.text
+                        logger.info(
+                            f"[{session.id}] ServerContent | "
+                            f"model_turn={has_turn} | "
+                            f"parts={len(sc.model_turn.parts) if has_parts else 0} | "
+                            f"turn_complete={sc.turn_complete} | "
+                            f"transcription={bool(has_transcript)}"
+                        )
 
                         if sc.model_turn and sc.model_turn.parts:
                             for part in sc.model_turn.parts:
@@ -187,6 +256,30 @@ async def agent_loop(
                             full_text = "".join(agent_text_buffer)
                             if full_text:
                                 session.add_transcript("agent", full_text)
+
+                                # Parse structured tags and emit typed events
+                                structured_events, narration = parse_agent_text(
+                                    full_text, seen_types=seen_event_types
+                                )
+                                for event in structured_events:
+                                    await send_json(ws, event)
+
+                                    # Store brand name on session if revealed
+                                    if event["type"] == "brand_name_reveal" and event.get("name"):
+                                        session.brand_name = event["name"]
+
+                                    # Store palette on session if revealed
+                                    if event["type"] == "palette_reveal" and event.get("colors"):
+                                        session.palette = event["colors"]
+
+                                # Send cleaned narration text (tags stripped)
+                                if narration:
+                                    await send_json(ws, {
+                                        "type": "agent_narration",
+                                        "text": narration,
+                                    })
+
+                                # Also send full text for backwards compat
                                 await send_json(ws, {
                                     "type": "agent_text",
                                     "text": full_text,
@@ -217,6 +310,19 @@ async def agent_loop(
                             buffered = "".join(agent_text_buffer)
                             if buffered:
                                 session.add_transcript("agent", buffered)
+                                # Parse structured events from pre-tool text
+                                mid_events, mid_narration = parse_agent_text(
+                                    buffered, seen_types=seen_event_types
+                                )
+                                for me in mid_events:
+                                    await send_json(ws, me)
+                                    if me.get("type") == "brand_name_reveal" and me.get("name"):
+                                        session.brand_name = me["name"]
+                                if mid_narration:
+                                    await send_json(ws, {
+                                        "type": "agent_narration",
+                                        "text": mid_narration,
+                                    })
                                 agent_text_buffer.clear()
 
                             brand_state.infer_phase_from_tool(session, fc.name)
@@ -248,8 +354,7 @@ async def agent_loop(
                                 session_active = False
 
                     if message.setup_complete:
-                        logger.info(f"[{session.id}] Phase: INIT | Action: setup_complete")
-                        await send_json(ws, {"type": "session_ready"})
+                        logger.info(f"[{session.id}] Phase: INIT | Action: setup_complete (ignored, session_ready already sent)")
 
                 else:
                     logger.warning(

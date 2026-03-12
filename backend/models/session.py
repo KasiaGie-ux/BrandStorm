@@ -54,15 +54,22 @@ class Session:
     transcript: list[dict[str, str]] = field(default_factory=list)
     user_preferences: dict[str, Any] = field(default_factory=dict)
 
+    # Generated asset bytes (for chaining as context to subsequent generations)
+    logo_image_bytes: bytes | None = None
+    logo_image_mime: str = "image/png"
+
     # Palette (set by generate_palette tool)
     palette: list[dict[str, str]] | None = None
 
     # Finalization
     zip_url: str | None = None
 
+    # Whether packaging asset is expected (agent decides based on product type)
+    expects_packaging: bool = True
+
     @property
     def total_assets(self) -> int:
-        return 4  # logo, hero_lifestyle, instagram_post, packaging
+        return 4 if self.expects_packaging else 3
 
     @property
     def progress(self) -> float:
