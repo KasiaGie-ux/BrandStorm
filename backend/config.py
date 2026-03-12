@@ -15,7 +15,7 @@ TEXT_MODEL = os.getenv("TEXT_MODEL", "gemini-3.1-pro-preview")              # La
 TEXT_MODEL_FALLBACK = os.getenv("TEXT_MODEL_FALLBACK", "gemini-2.5-pro")    # Stable, GA
 
 # === Live API (voice conversation) ===
-LIVE_API_MODEL = os.getenv("LIVE_API_MODEL", "gemini-live-2.5-flash-native-audio")          # Vertex AI GA name. Dev API equivalent: gemini-2.5-flash-native-audio-preview-12-2025
+LIVE_API_MODEL = os.getenv("LIVE_API_MODEL", "gemini-2.0-flash-live-preview-04-09")  # Official Vertex AI Live API model — supports function calling + TEXT+AUDIO
 LIVE_API_MODEL_DEV = os.getenv("LIVE_API_MODEL_DEV", "gemini-2.5-flash-native-audio-preview-12-2025")  # Dev API preview
 LIVE_API_FALLBACK = os.getenv("LIVE_API_FALLBACK", "gemini-2.5-flash")      # Basic Live API, worse voice
 
@@ -26,6 +26,10 @@ ASSETS_BUCKET = os.getenv("ASSETS_BUCKET", f"bb-assets-{GCP_PROJECT}")
 # Session
 SESSION_TIMEOUT_SEC = int(os.getenv("SESSION_TIMEOUT_SEC", "300"))
 SESSION_WARNING_SEC = int(os.getenv("SESSION_WARNING_SEC", "240"))
+
+# Local storage
+LOCAL_ASSETS_DIR = os.getenv("LOCAL_ASSETS_DIR", "generated_assets")
+USE_GCS = os.getenv("USE_GCS", "false").lower() == "true"
 
 # Server
 PORT = int(os.getenv("PORT", "8080"))

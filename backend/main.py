@@ -1,6 +1,8 @@
 """FastAPI application entry point."""
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -13,12 +15,12 @@ logger = logging.getLogger("brand-agent")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Brand in a Box starting up")
+    logger.info("BrandStorm starting up")
     yield
-    logger.info("Brand in a Box shutting down")
+    logger.info("BrandStorm shutting down")
 
 
-app = FastAPI(title="Brand in a Box", version="5.0", lifespan=lifespan)
+app = FastAPI(title="BrandStorm", version="5.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,19 +29,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Routes ---
+from routes.ws import router as ws_router
+app.include_router(ws_router)
 
-@app.get("/api/health")
-async def health():
-    return {"status": "ok", "version": "5.0", "vertex_ai": True}
+from routes.api import router as api_router
+app.include_router(api_router)
 
-
-# from routes.ws import router as ws_router
-# app.include_router(ws_router)
-
-# from routes.api import router as api_router
-# app.include_router(api_router)
-
-# app.mount("/", StaticFiles(directory="static", html=True), name="spa")
+# --- Static SPA (React build) ---
+static_dir = Path(__file__).parent / "static"
+if static_dir.exists():
+    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="spa")
 
 
 if __name__ == "__main__":
