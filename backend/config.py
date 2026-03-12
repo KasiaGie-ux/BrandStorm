@@ -35,7 +35,7 @@ USE_GCS = os.getenv("USE_GCS", "false").lower() == "true"
 # Developer API fallback (when Vertex AI image gen fails completely)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 USE_DEVELOPER_API_FALLBACK = os.getenv("USE_DEVELOPER_API_FALLBACK", "true").lower() == "true"
-DEVELOPER_API_IMAGE_MODEL = os.getenv("DEVELOPER_API_IMAGE_MODEL", "gemini-2.0-flash-exp")
+DEVELOPER_API_IMAGE_MODEL = os.getenv("DEVELOPER_API_IMAGE_MODEL", "gemini-3-pro-image-preview")
 
 # Server
 PORT = int(os.getenv("PORT", "8080"))

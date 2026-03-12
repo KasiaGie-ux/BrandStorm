@@ -13,6 +13,7 @@ from google.genai import types
 from models.session import Session
 from services.image_generator import ImageGenerator
 from services.storage import StorageService
+from services.voiceover import generate_voiceover
 
 logger = logging.getLogger("brand-agent")
 
@@ -69,6 +70,8 @@ class ToolExecutor:
                 result, event = await self._handle_generate_image(session, args)
             elif name == "generate_palette":
                 result, event = await self._handle_generate_palette(session, args)
+            elif name == "generate_voiceover":
+                result, event = await self._handle_voiceover(session, args)
             elif name == "finalize_brand_kit":
                 result, event = await self._handle_finalize(session, args)
             else:
@@ -308,10 +311,9 @@ class ToolExecutor:
         result = {
             "status": "success",
             "message": (
-                "Palette acknowledged. Return the 5 colors as a list with: "
-                "hex value, role (primary/secondary/accent/neutral/background), "
-                f"and name. Mood: {mood}. Style: {style_anchor}. "
-                "Now proceed to generate the logo."
+                "Palette acknowledged. Now output your font pairing using "
+                "[FONT_SUGGESTION] tags (heading and body fonts with rationale). "
+                "After that, proceed to generate the logo."
             ),
             "mood": mood,
             "style_anchor": style_anchor,
@@ -319,6 +321,50 @@ class ToolExecutor:
         }
         # Emit palette_reveal (structured event for frontend rendering)
         event = {"type": "palette_reveal", "mood": mood, "colors": colors}
+        return result, event
+
+    async def _handle_voiceover(
+        self, session: Session, args: dict,
+    ) -> tuple[dict, dict | None]:
+        """generate_voiceover — narrate brand story via Gemini TTS."""
+        text = args.get("text", session.brand_story or "")
+        mood = args.get("mood", "luxury")
+
+        if not text:
+            logger.warning(
+                f"[{session.id}] Phase: GENERATING | Action: voiceover_no_text | "
+                f"No brand story text available for voiceover"
+            )
+            return {"status": "skipped", "reason": "No text provided"}, None
+
+        audio_bytes = await generate_voiceover(
+            session_id=session.id,
+            text=text,
+            mood=mood,
+        )
+
+        if not audio_bytes:
+            return {"status": "skipped", "reason": "TTS generation failed"}, None
+
+        # Upload audio to storage
+        url = await self._storage.upload_image(
+            session_id=session.id,
+            asset_type="voiceover",
+            image_bytes=audio_bytes,
+            mime_type="audio/wav",
+        )
+        session.audio_url = url
+
+        logger.info(
+            f"[{session.id}] Phase: GENERATING | Action: voiceover_stored | "
+            f"URL: {url} | Size: {len(audio_bytes)} bytes"
+        )
+
+        result = {"status": "success", "audio_url": url}
+        event = {
+            "type": "voiceover_generated",
+            "audio_url": url,
+        }
         return result, event
 
     async def _handle_finalize(
@@ -335,6 +381,17 @@ class ToolExecutor:
         elif args.get("brand_name"):
             session.brand_name = args["brand_name"]
 
+        # Store finalize args on session for full payload
+        tagline = args.get("tagline", session.tagline or "")
+        brand_story = args.get("brand_story", session.brand_story or "")
+        brand_values = args.get("brand_values", session.brand_values or [])
+        tone_of_voice = args.get("tone_of_voice", session.tone_of_voice or {})
+
+        session.tagline = tagline
+        session.brand_story = brand_story
+        session.brand_values = brand_values
+        session.tone_of_voice = tone_of_voice
+
         if not session.completed_assets:
             logger.warning(
                 f"[{session.id}] Phase: GENERATING | Action: finalize_no_assets | "
@@ -347,6 +404,16 @@ class ToolExecutor:
         )
         session.zip_url = zip_url
 
+        # Build images array from asset_urls for frontend
+        images = []
+        for asset_type, url in session.asset_urls.items():
+            images.append({
+                "url": url,
+                "asset_type": asset_type,
+                "label": _ASSET_LABELS.get(asset_type, asset_type).title(),
+                "description": "",
+            })
+
         result = {
             "status": "success",
             "brand_name": session.brand_name,
@@ -356,8 +423,16 @@ class ToolExecutor:
         event = {
             "type": "generation_complete",
             "brand_name": session.brand_name,
+            "tagline": session.tagline,
+            "brand_story": session.brand_story,
+            "brand_values": session.brand_values,
+            "palette": session.palette or [],
+            "font_suggestion": session.font_suggestion,
+            "images": images,
+            "tone_of_voice": session.tone_of_voice,
+            "audio_url": session.audio_url,
+            "asset_urls": session.asset_urls,
             "zip_url": zip_url,
-            "assets": session.asset_urls,
             "progress": 1.0,
         }
         return result, event

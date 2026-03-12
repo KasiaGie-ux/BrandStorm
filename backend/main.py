@@ -47,4 +47,6 @@ if static_dir.exists():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host=HOST, port=PORT, reload=True)
+    import sys
+    use_reload = "--no-reload" not in sys.argv
+    uvicorn.run("main:app", host=HOST, port=PORT, reload=use_reload)

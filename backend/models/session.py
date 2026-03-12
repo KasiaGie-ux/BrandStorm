@@ -61,6 +61,20 @@ class Session:
     # Palette (set by generate_palette tool)
     palette: list[dict[str, str]] | None = None
 
+    # Font suggestion (set by text_parser or finalize)
+    font_suggestion: dict[str, Any] | None = None
+
+    # Tone of voice (set by finalize_brand_kit tool)
+    tone_of_voice: dict[str, list[str]] | None = None
+
+    # Brand story, tagline, values (set by finalize_brand_kit tool)
+    tagline: str | None = None
+    brand_story: str | None = None
+    brand_values: list[str] | None = None
+
+    # Voiceover audio URL (set by generate_voiceover tool)
+    audio_url: str | None = None
+
     # Finalization
     zip_url: str | None = None
 
@@ -92,10 +106,16 @@ class Session:
             "id": self.id,
             "phase": self.phase.value,
             "brand_name": self.brand_name,
+            "tagline": self.tagline,
+            "brand_story": self.brand_story,
+            "brand_values": self.brand_values,
             "completed_assets": self.completed_assets,
             "asset_urls": self.asset_urls,
             "progress": self.progress,
             "palette": self.palette,
+            "font_suggestion": self.font_suggestion,
+            "tone_of_voice": self.tone_of_voice,
+            "audio_url": self.audio_url,
             "zip_url": self.zip_url,
             "created_at": self.created_at,
             "updated_at": self.updated_at,

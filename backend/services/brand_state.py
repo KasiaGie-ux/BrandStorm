@@ -18,7 +18,29 @@ _completed: dict[str, Session] = {}
 
 
 def create_session(session_id: str | None = None) -> Session:
-    """Create a new session and register it."""
+    """Create or restore a session.
+
+    If a completed session with the same ID exists (e.g. after stop/reconnect),
+    restore it so that accumulated brand data (palette, images, etc.) survives.
+    """
+    # Check if there's a completed session to restore
+    if session_id and session_id in _completed:
+        session = _completed.pop(session_id)
+        _sessions[session.id] = session
+        logger.info(
+            f"[{session.id}] Phase: {session.phase.value} | Action: session_restored | "
+            f"Assets: {list(session.asset_urls.keys())}"
+        )
+        return session
+
+    # Also check active sessions (duplicate WS connect)
+    if session_id and session_id in _sessions:
+        logger.info(
+            f"[{session_id}] Phase: {_sessions[session_id].phase.value} | "
+            f"Action: session_reused"
+        )
+        return _sessions[session_id]
+
     session = Session() if session_id is None else Session(id=session_id)
     _sessions[session.id] = session
     logger.info(
@@ -74,6 +96,7 @@ def infer_phase_from_tool(session: Session, tool_name: str) -> None:
         "analyze_product": AgentPhase.ANALYZING,
         "generate_image": AgentPhase.GENERATING,
         "generate_palette": AgentPhase.GENERATING,
+        "generate_voiceover": AgentPhase.GENERATING,
         "finalize_brand_kit": AgentPhase.COMPLETE,
     }
     new_phase = phase_map.get(tool_name)

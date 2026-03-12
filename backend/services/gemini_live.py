@@ -145,12 +145,39 @@ TOOL_DECLARATIONS = types.Tool(
                            "brand_values", "tone_of_voice"],
             ),
         ),
+        types.FunctionDeclaration(
+            name="generate_voiceover",
+            description=(
+                "Record the brand story as a professional voiceover. "
+                "Pick a voice that matches the brand mood. Call this "
+                "after generating visual assets but before finalize_brand_kit."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "text": types.Schema(
+                        type=types.Type.STRING,
+                        description="Brand story text to narrate.",
+                    ),
+                    "mood": types.Schema(
+                        type=types.Type.STRING,
+                        enum=["luxury", "modern", "eco", "energetic", "gentle", "edgy"],
+                        description="The brand mood — determines voice selection.",
+                    ),
+                },
+                required=["text", "mood"],
+            ),
+        ),
     ]
 )
 
 
 def create_client() -> genai.Client:
     """Create a Vertex AI genai client with ADC."""
+    import os
+    # Suppress google.auth warning about missing project — we pass it explicitly
+    os.environ.setdefault("GOOGLE_CLOUD_PROJECT", GCP_PROJECT)
+    logger.info(f"Creating genai client | Project: {GCP_PROJECT} | Location: {GCP_LOCATION}")
     return genai.Client(
         vertexai=True,
         project=GCP_PROJECT,

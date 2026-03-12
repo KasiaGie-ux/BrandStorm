@@ -25,6 +25,9 @@ export default function App() {
   const contextTextRef = useRef('');
   const firstTextCaptured = useRef(false);
   const generationTimeoutRef = useRef(null);
+  const messagesRef = useRef([]);
+  const pendingResumeRef = useRef(null);
+  const awaitingFirstConnect = useRef(false);
 
   // Drag state lifted for UploadStage
   const [dragOnPage, setDragOnPage] = useState(false);
@@ -62,8 +65,13 @@ export default function App() {
     };
   }, []);
 
+  const msgIdCounter = useRef(0);
   const addMessage = useCallback((msg) => {
-    setMessages(prev => [...prev, msg]);
+    setMessages(prev => {
+      const next = [...prev, { ...msg, _id: ++msgIdCounter.current }];
+      messagesRef.current = next;
+      return next;
+    });
   }, []);
 
   const handleWsMessage = useCallback((event) => {
@@ -71,22 +79,53 @@ export default function App() {
 
     switch (type) {
       case 'session_ready':
-        if (imageFileRef.current) {
-          const reader = new FileReader();
-          reader.onload = (e) => {
-            const base64 = e.target.result.split(',')[1];
-            ws.sendMessage({
-              type: 'image_upload',
-              data: base64,
-              mime_type: imageFileRef.current.type || 'image/jpeg',
-              context: contextTextRef.current,
-            });
-          };
-          reader.onerror = () => {
-            addMessage({ type: 'agent_text', text: 'Failed to read image file. Please go back and try again.' });
-          };
-          reader.readAsDataURL(imageFileRef.current);
+        // Resume after stop: send the pending message + product image for context
+        if (pendingResumeRef.current) {
+          const resumeText = pendingResumeRef.current;
+          pendingResumeRef.current = null;
+          // Re-send product image so the new Live API session has visual context
+          if (imageFileRef.current) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+              const base64 = e.target.result.split(',')[1];
+              ws.sendMessage({
+                type: 'image_upload',
+                data: base64,
+                mime_type: imageFileRef.current.type || 'image/jpeg',
+                context: `RESUMING SESSION. User says: ${resumeText}. Continue where you left off.`,
+              });
+            };
+            reader.readAsDataURL(imageFileRef.current);
+          } else {
+            // No image, just send the text
+            ws.sendMessage({ type: 'text_input', text: resumeText });
+          }
+          setPhase('GENERATING');
+          break;
         }
+        // First connect — upload image
+        if (awaitingFirstConnect.current) {
+          awaitingFirstConnect.current = false;
+          if (imageFileRef.current) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+              const base64 = e.target.result.split(',')[1];
+              ws.sendMessage({
+                type: 'image_upload',
+                data: base64,
+                mime_type: imageFileRef.current.type || 'image/jpeg',
+                context: contextTextRef.current,
+              });
+            };
+            reader.onerror = () => {
+              addMessage({ type: 'agent_text', text: 'Failed to read image file. Please go back and try again.' });
+            };
+            reader.readAsDataURL(imageFileRef.current);
+          }
+          break;
+        }
+        // Reconnect (connection lost mid-session)
+        addMessage({ type: 'agent_text', text: 'Connection was lost. Your session could not be resumed — please start over if generation stalled.' });
         break;
 
       case 'agent_text':
@@ -103,17 +142,17 @@ export default function App() {
               updated[updated.length - 1] = { ...last, text: last.text + event.text };
               return updated;
             }
-            return [...prev, { type: 'agent_text', text: event.text, _partial: true }];
+            return [...prev, { type: 'agent_text', text: event.text, _partial: true, _id: ++msgIdCounter.current }];
           });
         } else {
           setMessages(prev => {
             const last = prev[prev.length - 1];
             if (last && last.type === 'agent_text' && last._partial) {
               const updated = [...prev];
-              updated[updated.length - 1] = { type: 'agent_text', text: event.text };
+              updated[updated.length - 1] = { ...last, type: 'agent_text', text: event.text, _partial: false };
               return updated;
             }
-            return [...prev, { type: 'agent_text', text: event.text }];
+            return [...prev, { type: 'agent_text', text: event.text, _id: ++msgIdCounter.current }];
           });
         }
         break;
@@ -153,16 +192,6 @@ export default function App() {
         break;
       }
 
-      case 'palette_ready':
-        if (event.colors?.length) {
-          addMessage({ type: 'palette_ready', colors: event.colors, mood: event.mood });
-        }
-        break;
-
-      case 'brand_reveal':
-        addMessage({ type: 'brand_reveal', name: event.name, tagline: event.tagline });
-        break;
-
       case 'brand_name_reveal':
         addMessage({ type: 'brand_name_reveal', name: event.name, rationale: event.rationale });
         break;
@@ -190,10 +219,6 @@ export default function App() {
         });
         break;
 
-      case 'direction_proposals':
-        addMessage({ type: 'direction_proposals', directions: event.directions });
-        break;
-
       case 'palette_reveal':
         if (event.colors?.length) {
           addMessage({ type: 'palette_reveal', colors: event.colors, mood: event.mood });
@@ -217,6 +242,13 @@ export default function App() {
         break;
 
       case 'agent_audio':
+      case 'ping':
+        break;
+
+      case 'voiceover_generated':
+        // Store audio_url in brandKit state — will be picked up on generation_complete
+        setBrandKit(prev => prev ? { ...prev, audio_url: event.audio_url } : { audio_url: event.audio_url });
+        addMessage({ type: 'voiceover_generated', audio_url: event.audio_url });
         break;
 
       case 'session_timeout':
@@ -241,10 +273,13 @@ export default function App() {
     const sid = `session-${Date.now().toString(36)}`;
     setSessionId(sid);
     setMessages([]);
+    messagesRef.current = [];
     setPhase('INIT');
     setBrandKit(null);
     setFirstAgentText(null);
     firstTextCaptured.current = false;
+    pendingResumeRef.current = null;
+    awaitingFirstConnect.current = true;
     imageFileRef.current = imageFile;
     contextTextRef.current = contextText || '';
 
@@ -270,11 +305,18 @@ export default function App() {
   }, []);
 
   const handleSendMessage = useCallback((msg) => {
-    ws.sendMessage(msg);
     if (msg.type === 'text_input') {
       addMessage({ type: 'user', text: msg.text });
     }
-  }, [ws, addMessage]);
+    // If WS is disconnected (e.g. after stop), reconnect and queue the message
+    if (!ws.isConnected && sessionId) {
+      pendingResumeRef.current = msg.type === 'text_input' ? msg.text : 'Continue';
+      addMessage({ type: 'agent_thinking', text: 'Reconnecting...' });
+      ws.connect(sessionId);
+      return;
+    }
+    ws.sendMessage(msg);
+  }, [ws, sessionId, addMessage]);
 
   const handleReset = useCallback(() => {
     clearTimeout(generationTimeoutRef.current);
@@ -285,6 +327,8 @@ export default function App() {
     setPhase('INIT');
     setBrandKit(null);
     imageFileRef.current = null;
+    pendingResumeRef.current = null;
+    awaitingFirstConnect.current = false;
     setImagePreview(null);
     setFirstAgentText(null);
     firstTextCaptured.current = false;
@@ -294,8 +338,8 @@ export default function App() {
     clearTimeout(generationTimeoutRef.current);
     ws.sendMessage({ type: 'stop_session' });
     ws.disconnect();
-    setPhase('COMPLETE');
-    addMessage({ type: 'agent_text', text: 'Session stopped.' });
+    setPhase('STOPPED');
+    addMessage({ type: 'agent_text', text: 'Session paused. Type a message or say something to resume.' });
   }, [ws, addMessage]);
 
   const handleBack = useCallback(() => {

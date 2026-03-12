@@ -5,11 +5,15 @@ import DrawLine from './DrawLine';
 import { raw, fonts, easeCurve } from '../styles/tokens';
 
 export default function BrandNameReveal({ name, rationale }) {
-  const [showRationale, setShowRationale] = useState(false);
+  const [showLine, setShowLine] = useState(false);
+  const [showTagline, setShowTagline] = useState(false);
 
   useEffect(() => {
-    const t = setTimeout(() => setShowRationale(true), 600 + (name?.length || 0) * 40);
-    return () => clearTimeout(t);
+    // Line appears after name animation finishes
+    const lineDelay = 400 + (name?.length || 0) * 50;
+    const t1 = setTimeout(() => setShowLine(true), lineDelay);
+    const t2 = setTimeout(() => setShowTagline(true), lineDelay + 400);
+    return () => { clearTimeout(t1); clearTimeout(t2); };
   }, [name]);
 
   return (
@@ -18,33 +22,51 @@ export default function BrandNameReveal({ name, rationale }) {
       animate={{ opacity: 1 }}
       transition={{ duration: 0.4, ease: easeCurve }}
       style={{
-        width: '100%', padding: '28px 0 20px',
+        width: '100%', padding: '48px 0 32px',
         position: 'relative',
       }}
     >
-      {/* Brand name — huge kinetic */}
+      {/* Label */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+        <div style={{ width: 32, height: 1.5, background: raw.red }} />
+        <span style={{
+          fontSize: 9, fontWeight: 700, color: raw.red, letterSpacing: '0.2em',
+          fontFamily: fonts.body, textTransform: 'uppercase',
+        }}>YOUR BRAND</span>
+      </div>
+
+      {/* Brand name — HUGE kinetic */}
       <div style={{
-        fontFamily: fonts.display, fontSize: 'min(14vw, 64px)',
+        fontFamily: fonts.display, fontSize: 'min(18vw, 80px)',
         color: raw.ink, textTransform: 'uppercase',
-        letterSpacing: '0.03em', lineHeight: 1,
+        letterSpacing: '0.03em', lineHeight: 0.95,
       }}>
         <KineticWord text={name || ''} baseDelay={100} stagger={50} from="bottom" />
       </div>
 
-      {/* Red accent line */}
-      <div style={{ position: 'relative', height: 3, marginTop: 10, width: '100%' }}>
-        <DrawLine direction="horizontal" delay={400} color={raw.red} thickness={3} />
+      {/* Red accent line — animated across full width */}
+      <div style={{
+        position: 'relative', height: 3, marginTop: 14, width: '100%',
+        overflow: 'hidden',
+      }}>
+        <div style={{
+          position: 'absolute', left: 0, top: 0,
+          width: showLine ? '100%' : '0%',
+          height: 3,
+          background: raw.red,
+          transition: 'width 0.8s cubic-bezier(0.16,1,0.3,1)',
+        }} />
       </div>
 
-      {/* Rationale */}
+      {/* Rationale below line */}
       {rationale && (
         <div style={{
           fontFamily: fonts.body, fontStyle: 'italic',
-          fontSize: 13, color: raw.muted, lineHeight: 1.6,
-          marginTop: 14,
-          opacity: showRationale ? 1 : 0,
-          transform: showRationale ? 'translateY(0)' : 'translateY(8px)',
-          transition: 'all 0.6s cubic-bezier(0.16,1,0.3,1)',
+          fontSize: 14, color: raw.muted, lineHeight: 1.6,
+          marginTop: 16,
+          opacity: showTagline ? 1 : 0,
+          transform: showTagline ? 'translateY(0)' : 'translateY(10px)',
+          transition: 'all 0.7s cubic-bezier(0.16,1,0.3,1)',
         }}>{rationale}</div>
       )}
     </motion.div>

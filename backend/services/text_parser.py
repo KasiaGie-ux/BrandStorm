@@ -75,7 +75,10 @@ def parse_agent_text(
                 continue
             event = _parse_tag(tag_name, content)
             if event:
+                logger.info(f"TextParser | Parsed tag: {tag_name} → type={event.get('type')} | keys={list(event.keys())}")
                 events.append(event)
+            else:
+                logger.warning(f"TextParser | Tag {tag_name} returned None | content: {content[:100]}")
 
         # If no structured tags found, try regex fallback
         if not found_tags:
@@ -102,6 +105,8 @@ def parse_agent_text(
     try:
         cleaned = _TAG_RE.sub("", text).strip()
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        # Remove tool-call narration lines (agent explaining what it's about to do)
+        cleaned = _strip_tool_narration(cleaned)
     except Exception:
         cleaned = text.strip()
 
@@ -112,6 +117,26 @@ def parse_agent_text(
         )
 
     return events, cleaned
+
+
+_TOOL_NARRATION_RE = re.compile(
+    r"^.*?(?:"
+    r"I will call|I'll call|I'm going to call|I am going to call|"
+    r"I will now call|Let me call|I'll use|I will use|I'm calling|"
+    r"The prompt will (?:include|be)|"
+    r"I'll invoke|I will invoke|"
+    r"calling generate_|calling analyze_|calling finalize_|"
+    r"I'll generate|I will generate the"
+    r").*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _strip_tool_narration(text: str) -> str:
+    """Remove lines where the agent narrates its tool-call intent."""
+    cleaned = _TOOL_NARRATION_RE.sub("", text)
+    cleaned = re.sub(r"\n{2,}", "\n\n", cleaned).strip()
+    return cleaned
 
 
 def _parse_tag(tag_name: str, content: str) -> dict | None:
@@ -134,7 +159,9 @@ def _parse_tag(tag_name: str, content: str) -> dict | None:
             return {"type": "brand_values", "values": values}
 
         if tag_name == "DIRECTION_PROPOSALS":
-            return _parse_directions(content)
+            # Direction proposals removed — agent decides direction autonomously.
+            # Silently consume the tag so it doesn't leak to frontend.
+            return None
 
         if tag_name == "NAME_PROPOSALS":
             return _parse_name_proposals(content)
@@ -146,7 +173,8 @@ def _parse_tag(tag_name: str, content: str) -> dict | None:
             return _parse_fonts(content)
 
         if tag_name == "AGENT_THINKING":
-            return {"type": "agent_thinking", "text": content}
+            # Silently consume — internal narration, not for display
+            return None
 
         logger.warning(f"TextParser | Unknown tag: {tag_name}")
         return None
@@ -200,30 +228,6 @@ def _regex_fallback(text: str) -> list[dict]:
 
 
 # ---------- Structured tag parsers ----------
-
-def _parse_directions(content: str) -> dict:
-    """Parse direction proposals from pipe-delimited lines.
-
-    Format: id|name|description|recommended (optional)
-    """
-    directions = []
-    for line in content.strip().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = [p.strip() for p in line.split("|")]
-        if len(parts) < 3:
-            continue
-        direction = {
-            "id": int(parts[0]) if parts[0].isdigit() else len(directions) + 1,
-            "name": parts[1],
-            "description": parts[2],
-        }
-        if len(parts) > 3 and "recommended" in parts[3].lower():
-            direction["recommended"] = True
-        directions.append(direction)
-
-    return {"type": "direction_proposals", "directions": directions}
 
 
 def _parse_name_proposals(content: str) -> dict:
@@ -280,27 +284,53 @@ def _parse_palette(content: str) -> dict:
 def _parse_fonts(content: str) -> dict:
     """Parse font suggestion from pipe-delimited lines.
 
-    Format:
+    Format (primary — pipe-delimited):
     heading|Family Name|style description
     body|Family Name|style description
     rationale|The rationale text
+
+    Also handles colon-delimited and common agent variations.
     """
+    logger.info(f"TextParser | _parse_fonts raw content: {content[:200]}")
     result: dict = {"type": "font_suggestion"}
+
     for line in content.strip().splitlines():
         line = line.strip()
         if not line:
             continue
-        parts = [p.strip() for p in line.split("|", 2)]
-        if len(parts) < 2:
-            continue
-        key = parts[0].lower()
-        if key in ("heading", "body"):
-            result[key] = {
-                "family": parts[1],
-                "google_fonts": True,
-                "style": parts[2] if len(parts) > 2 else "",
-            }
-        elif key == "rationale":
-            result["rationale"] = parts[1] if len(parts) == 2 else "|".join(parts[1:])
 
+        # Try pipe-delimited first
+        parts = [p.strip() for p in line.split("|", 2)]
+        if len(parts) >= 2:
+            key = parts[0].lower().strip("*- ")
+            if key in ("heading", "body", "display"):
+                mapped_key = "heading" if key in ("heading", "display") else "body"
+                result[mapped_key] = {
+                    "family": parts[1].strip("*` "),
+                    "google_fonts": True,
+                    "style": parts[2].strip("*` ") if len(parts) > 2 else "",
+                }
+                continue
+            elif key == "rationale":
+                result["rationale"] = parts[1] if len(parts) == 2 else "|".join(parts[1:])
+                continue
+
+        # Try colon-delimited fallback (e.g. "Heading: Playfair Display")
+        if ":" in line:
+            key_part, _, val_part = line.partition(":")
+            key = key_part.lower().strip("*- ")
+            val = val_part.strip("*` ")
+            if key in ("heading", "heading font", "display", "display font"):
+                result["heading"] = {"family": val, "google_fonts": True, "style": ""}
+            elif key in ("body", "body font", "text", "text font"):
+                result["body"] = {"family": val, "google_fonts": True, "style": ""}
+            elif key == "rationale":
+                result["rationale"] = val
+
+    # Only emit if we have at least one font
+    if "heading" not in result and "body" not in result:
+        logger.warning(f"TextParser | FONT_SUGGESTION parsed no fonts from: {content[:200]}")
+        return None
+
+    logger.info(f"TextParser | FONT_SUGGESTION result: heading={result.get('heading', {}).get('family')} body={result.get('body', {}).get('family')}")
     return result

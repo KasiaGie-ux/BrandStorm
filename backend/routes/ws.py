@@ -58,6 +58,15 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
                 f"[{session_id}] Phase: INIT | Action: session_ready_sent"
             )
 
+            async def keepalive_loop():
+                """Send periodic pings to prevent WebSocket idle timeout."""
+                try:
+                    while True:
+                        await asyncio.sleep(15)
+                        await ws.send_json({"type": "ping"})
+                except Exception:
+                    pass  # WS closed, exit silently
+
             receive_task = asyncio.create_task(
                 receive_loop(ws, live_session, session),
                 name="receive",
@@ -66,11 +75,16 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
                 agent_loop(ws, live_session, session, tool_executor),
                 name="agent",
             )
+            keepalive_task = asyncio.create_task(
+                keepalive_loop(),
+                name="keepalive",
+            )
 
             done, pending = await asyncio.wait(
                 [receive_task, agent_task],
                 return_when=asyncio.FIRST_COMPLETED,
             )
+            keepalive_task.cancel()
             for task in done:
                 try:
                     exc = task.exception()

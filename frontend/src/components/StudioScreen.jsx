@@ -5,10 +5,10 @@ import MessageBubble, { ImageTile, ProductOverlay, ImageOverlay } from './Messag
 import { raw, fonts } from '../styles/tokens';
 
 const DISPLAY_TYPES = [
-  'agent_text', 'agent_narration', 'agent_thinking', 'user',
+  'agent_text', 'agent_narration', 'user',
   'brand_reveal', 'brand_name_reveal', 'brand_name_reveal_rationale',
   'tagline_reveal', 'brand_values', 'brand_story',
-  'name_proposals', 'direction_proposals',
+  'name_proposals',
   'image_generated', 'tool_invoked', 'generation_complete',
   'palette_reveal', 'palette_ready', 'font_suggestion',
 ];
@@ -53,8 +53,26 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
     setImageOverlay({ src, label });
   }, []);
 
-  const displayMessages = messages.filter(m => DISPLAY_TYPES.includes(m.type));
+  const TOOL_RESULT_MAP = {
+    generate_image: 'image_generated',
+    generate_palette: 'palette_reveal',
+    finalize_brand_kit: 'generation_complete',
+    generate_voiceover: 'voiceover_generated',
+  };
+  const displayMessages = messages.filter((m, i) => {
+    if (!DISPLAY_TYPES.includes(m.type)) return false;
+    // Hide tool_invoked spinner if a result for this tool exists later in messages
+    if (m.type === 'tool_invoked' && m.tool) {
+      const resultType = TOOL_RESULT_MAP[m.tool];
+      if (resultType) {
+        const hasResult = messages.slice(i + 1).some(later => later.type === resultType);
+        if (hasResult) return false;
+      }
+    }
+    return true;
+  });
   const isGenerating = phase === 'GENERATING' || phase === 'REFINING';
+  const isStopped = phase === 'STOPPED';
 
   return (
     <div style={{
@@ -123,14 +141,14 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
         display: 'flex', flexDirection: 'column', gap: 16,
         maxWidth: 640, width: '100%', margin: '0 auto',
       }}>
-        <AnimatePresence>
-          {displayMessages.map((msg, i) => {
+          {displayMessages.map((msg) => {
+            const key = msg._id != null ? `m-${msg._id}` : `m-${msg.type}-${msg.url || msg.name || ''}`;
             if (msg.type === 'image_generated') {
-              return <ImageTile key={`img-${i}`} msg={msg} onImageClick={handleImageClick} />;
+              return <ImageTile key={key} msg={msg} onImageClick={handleImageClick} />;
             }
             return (
               <MessageBubble
-                key={`msg-${i}`}
+                key={key}
                 msg={msg}
                 sendMessage={sendMessage}
                 brandName={brandName}
@@ -138,7 +156,6 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
               />
             );
           })}
-        </AnimatePresence>
       </div>
 
       {/* Input bar */}
@@ -147,7 +164,7 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
         background: `linear-gradient(to top, ${raw.cream} 60%, transparent)`,
       }}>
         <AnimatePresence>
-          {isGenerating && (
+          {(isGenerating || isStopped) && (
             <motion.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
@@ -155,10 +172,15 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
               style={{ maxWidth: 640, margin: '0 auto', paddingBottom: 8 }}
             >
               <div style={{
-                fontSize: 12, color: raw.faint, fontFamily: fonts.body,
+                fontSize: 12,
+                color: isStopped ? raw.red : raw.faint,
+                fontFamily: fonts.body,
                 fontStyle: 'italic',
+                fontWeight: isStopped ? 600 : 400,
               }}>
-                Don't like something? Tell the agent to change it.
+                {isStopped
+                  ? 'Session paused — type a message to resume.'
+                  : "Don't like something? Tell the agent to change it."}
               </div>
             </motion.div>
           )}
@@ -181,7 +203,7 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
               fontSize: 14, color: raw.ink, fontFamily: fonts.body,
             }}
           />
-          {onStop && phase !== 'INIT' && phase !== 'COMPLETE' && (
+          {onStop && phase !== 'INIT' && phase !== 'COMPLETE' && phase !== 'STOPPED' && (
             <button
               type="button"
               aria-label="Stop agent"

@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { motion } from 'motion/react';
-import { raw, fonts, easeCurve } from '../styles/tokens';
+import { raw, fonts } from '../styles/tokens';
 
 function loadGoogleFont(family) {
   if (!family) return;
@@ -13,87 +12,124 @@ function loadGoogleFont(family) {
   document.head.appendChild(link);
 }
 
-export default function FontSuggestion({ heading, body, rationale, brandName, tagline }) {
+function useFontLoaded(family) {
   const [loaded, setLoaded] = useState(false);
+  const intervalRef = useRef(null);
 
   useEffect(() => {
-    if (heading?.family) loadGoogleFont(heading.family);
-    if (body?.family) loadGoogleFont(body.family);
-    // Small delay to let font load
-    const t = setTimeout(() => setLoaded(true), 600);
-    return () => clearTimeout(t);
-  }, [heading, body]);
+    if (!family) return;
+    loadGoogleFont(family);
+    const check = () => {
+      if (document.fonts.check(`16px '${family}'`)) {
+        setLoaded(true);
+        clearInterval(intervalRef.current);
+      }
+    };
+    check();
+    intervalRef.current = setInterval(check, 150);
+    const t = setTimeout(() => {
+      setLoaded(true);
+      clearInterval(intervalRef.current);
+    }, 3000);
+    return () => {
+      clearInterval(intervalRef.current);
+      clearTimeout(t);
+    };
+  }, [family]);
+
+  return loaded;
+}
+
+export default function FontSuggestion({ heading, body, rationale, brandName, tagline }) {
+  const headingLoaded = useFontLoaded(heading?.family);
+  const bodyLoaded = useFontLoaded(body?.family);
 
   const sampleName = brandName || 'Your Brand';
   const sampleTagline = tagline || 'Where ideas become reality';
 
+  if (!heading?.family && !body?.family) return null;
+
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 14 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, ease: easeCurve }}
-      style={{
-        width: '100%',
-        background: 'rgba(255,255,255,0.5)',
-        border: `2px solid ${raw.line}`,
-        padding: '20px 22px',
-        position: 'relative',
-        overflow: 'hidden',
-      }}
-    >
+    <div style={{
+      padding: '16px 18px',
+      border: `2px solid ${raw.line}`,
+      background: 'rgba(255,255,255,0.4)',
+    }}>
       {/* Label */}
       <div style={{
         fontSize: 8, fontWeight: 700, letterSpacing: '0.14em',
         textTransform: 'uppercase', color: raw.faint,
-        fontFamily: fonts.body, marginBottom: 16,
+        fontFamily: fonts.body, marginBottom: 14,
       }}>TYPOGRAPHY</div>
 
-      {/* Heading font preview */}
-      {heading && (
-        <div style={{ marginBottom: 16 }}>
-          <div style={{
-            fontFamily: loaded ? `'${heading.family}', sans-serif` : fonts.display,
-            fontSize: 36, lineHeight: 1.1, color: raw.ink,
-            textTransform: 'uppercase', letterSpacing: '0.02em',
-            transition: 'font-family 0.3s ease',
-          }}>{sampleName}</div>
-          <div style={{
-            fontSize: 10, color: raw.faint, fontFamily: fonts.mono,
-            marginTop: 4, letterSpacing: '0.05em',
-          }}>
-            {heading.family} — Heading
-            {heading.style && <span style={{ color: raw.muted }}> · {heading.style}</span>}
-          </div>
-        </div>
-      )}
-
-      {/* Body font preview */}
-      {body && (
+      {/* Heading font */}
+      {heading?.family && (
         <div style={{ marginBottom: 14 }}>
           <div style={{
-            fontFamily: loaded ? `'${body.family}', sans-serif` : fonts.body,
-            fontSize: 16, lineHeight: 1.6, color: raw.muted,
-            fontStyle: 'italic',
-            transition: 'font-family 0.3s ease',
-          }}>{sampleTagline}</div>
+            fontFamily: `'${heading.family}', sans-serif`,
+            fontSize: 36, lineHeight: 1.1, color: raw.ink,
+            textTransform: 'uppercase', letterSpacing: '0.01em',
+            opacity: headingLoaded ? 1 : 0,
+            transition: 'opacity 0.4s ease',
+            minHeight: headingLoaded ? undefined : 40,
+          }}>{sampleName}</div>
           <div style={{
-            fontSize: 10, color: raw.faint, fontFamily: fonts.mono,
-            marginTop: 4, letterSpacing: '0.05em',
+            display: 'flex', alignItems: 'center', gap: 6,
+            marginTop: 8,
           }}>
-            {body.family} — Body
-            {body.style && <span style={{ color: raw.muted }}> · {body.style}</span>}
+            <div style={{
+              width: 6, height: 6, background: raw.red, flexShrink: 0,
+            }} />
+            <div style={{
+              fontSize: 10, color: raw.muted,
+              fontFamily: fonts.mono, letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+            }}>
+              {heading.family}
+              {heading.style && <span style={{ color: raw.faint }}> · {heading.style}</span>}
+              <span style={{ color: raw.faint }}> — Display</span>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Rationale */}
-      {rationale && (
-        <div style={{
-          fontSize: 12, color: raw.muted, fontFamily: fonts.body,
-          lineHeight: 1.5, fontStyle: 'italic',
-          borderTop: `1px solid ${raw.line}`, paddingTop: 12,
-        }}>{rationale}</div>
+      {/* Separator */}
+      <div style={{
+        height: 1, background: raw.line, width: '100%',
+        marginBottom: 14,
+      }} />
+
+      {/* Body font */}
+      {body?.family && (
+        <div>
+          <div style={{
+            fontFamily: `'${body.family}', sans-serif`,
+            fontSize: 18, lineHeight: 1.5, color: raw.muted,
+            fontStyle: 'italic',
+            opacity: bodyLoaded ? 1 : 0,
+            transition: 'opacity 0.4s ease',
+            minHeight: bodyLoaded ? undefined : 28,
+          }}>{sampleTagline}</div>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            marginTop: 8,
+          }}>
+            <div style={{
+              width: 6, height: 6, border: `1.5px solid ${raw.red}`,
+              background: 'transparent', flexShrink: 0,
+            }} />
+            <div style={{
+              fontSize: 10, color: raw.muted,
+              fontFamily: fonts.mono, letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+            }}>
+              {body.family}
+              {body.style && <span style={{ color: raw.faint }}> · {body.style}</span>}
+              <span style={{ color: raw.faint }}> — Body</span>
+            </div>
+          </div>
+        </div>
       )}
-    </motion.div>
+    </div>
   );
 }

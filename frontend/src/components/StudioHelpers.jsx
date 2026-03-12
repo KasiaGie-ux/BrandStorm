@@ -5,6 +5,11 @@ import { raw, fonts, easeCurve } from '../styles/tokens';
 export function stripMarkdown(text) {
   if (!text) return '';
   let s = text;
+  // Strip structured tags [TAG]...[/TAG] — these are parsed by backend, not for display
+  s = s.replace(/\[([A-Z_]+)\][\s\S]*?\[\/\1\]/g, '');
+  // Strip any orphaned opening/closing tags that didn't match
+  s = s.replace(/\[\/[A-Z_]+\]/g, '');
+  s = s.replace(/\[[A-Z_]{3,}\]/g, '');
   s = s.replace(/^#{1,6}\s+/gm, '');
   s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/__(.+?)__/g, '<strong>$1</strong>');
@@ -19,12 +24,7 @@ export function stripMarkdown(text) {
 export function resolveImageUrl(url) {
   if (!url) return '';
   if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('data:')) return url;
-  if (url.startsWith('/api/') || url.startsWith('/generated_assets/')) {
-    if (window.location.port === '5173' || window.location.port === '5174') {
-      return `http://localhost:8080${url}`;
-    }
-    return url;
-  }
+  // In dev mode, /api/ paths go through Vite proxy automatically — no rewrite needed
   return url;
 }
 
@@ -161,7 +161,6 @@ export function ImageTile({ msg, onImageClick }) {
         <img
           src={resolvedUrl}
           alt={label || 'Generated asset'}
-          crossOrigin="anonymous"
           onLoad={() => setLoaded(true)}
           onError={() => setFailed(true)}
           style={{

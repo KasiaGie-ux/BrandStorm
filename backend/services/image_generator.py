@@ -35,6 +35,7 @@ BACKOFF_SECS = [1, 2, 4]  # backoff per retry attempt
 
 # gemini-3-pro-image-preview requires the GLOBAL endpoint (not us-central1)
 _global_client: genai.Client | None = None
+_dev_client: genai.Client | None = None
 
 
 def _get_global_client() -> genai.Client:
@@ -51,11 +52,26 @@ def _get_global_client() -> genai.Client:
     return _global_client
 
 
-# Models chain: (model_name, label, use_global_client)
-MODELS_CHAIN: list[tuple[str, str, bool]] = [
-    (IMAGE_MODEL, "Nano Banana Pro", True),           # global endpoint
-    (IMAGE_MODEL_FALLBACK, "Nano Banana (fallback)", False),  # us-central1
-    (IMAGE_MODEL_FALLBACK_2, "Flash Image Gen (fallback 2)", False),  # us-central1
+def _get_dev_client() -> genai.Client | None:
+    """Lazy-init Developer API client (api_key mode). Returns None if no key."""
+    global _dev_client
+    if not GEMINI_API_KEY:
+        return None
+    if _dev_client is None:
+        _dev_client = genai.Client(api_key=GEMINI_API_KEY)
+        logger.info("ImageGenerator: created Developer API client")
+    return _dev_client
+
+
+# Generation chain — ordered priority:
+# 1. Vertex AI global — primary model, 1 attempt only
+# 2. Developer API — primary model, up to MAX_RETRIES_429 retries on 429
+# 3. Vertex AI us-central1 — fallback models
+_CHAIN_VERTEX_PRIMARY = ("vertex_global", IMAGE_MODEL, "Nano Banana Pro")
+_CHAIN_DEV_PRIMARY = ("dev_api", DEVELOPER_API_IMAGE_MODEL, "GenAI Nano Banana Pro")
+_CHAIN_VERTEX_FALLBACKS = [
+    ("vertex", IMAGE_MODEL_FALLBACK, "Nano Banana (fallback)"),
+    ("vertex", IMAGE_MODEL_FALLBACK_2, "Flash Image Gen (fallback 2)"),
 ]
 
 
@@ -168,48 +184,72 @@ class ImageGenerator:
                         continue  # retry same model
                     break  # non-429 or retries exhausted → next model
 
-        # --- Developer API fallback (API key mode) ---
+        # --- GenAI Developer API fallback (API key mode) ---
+        # When all Vertex AI models fail, try via Developer API with API key
         if USE_DEVELOPER_API_FALLBACK and GEMINI_API_KEY:
-            try:
-                logger.info(
-                    f"[{session_id}] Phase: GENERATING | Action: developer_api_fallback | "
-                    f"Model: {DEVELOPER_API_IMAGE_MODEL} | Asset: {asset_type}"
-                )
-                dev_client = genai.Client(api_key=GEMINI_API_KEY)
-                t0 = time.perf_counter()
-                response = await dev_client.aio.models.generate_content(
-                    model=DEVELOPER_API_IMAGE_MODEL,
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        response_modalities=["TEXT", "IMAGE"],
-                    ),
-                )
-                latency = (time.perf_counter() - t0) * 1000
+            dev_models = [
+                (DEVELOPER_API_IMAGE_MODEL, "GenAI " + DEVELOPER_API_IMAGE_MODEL),
+            ]
+            # Also try flash-image via Developer API if primary differs
+            if DEVELOPER_API_IMAGE_MODEL != IMAGE_MODEL_FALLBACK:
+                dev_models.append((IMAGE_MODEL_FALLBACK, "GenAI " + IMAGE_MODEL_FALLBACK))
 
-                if response.candidates and response.candidates[0].content.parts:
-                    image_data, text_desc = self._extract_parts(response)
-                    if image_data:
+            for dev_model, dev_label in dev_models:
+                for attempt in range(1 + MAX_RETRIES_429):
+                    try:
                         logger.info(
-                            f"[{session_id}] Phase: GENERATING | Action: developer_api_success | "
-                            f"Model: {DEVELOPER_API_IMAGE_MODEL} | Asset: {asset_type} | "
-                            f"Latency: {latency:.0f}ms | Size: {len(image_data.data) / 1024:.0f}KB"
+                            f"[{session_id}] Phase: GENERATING | Action: developer_api_fallback | "
+                            f"Model: {dev_label} | Asset: {asset_type} | "
+                            f"Attempt: {attempt + 1}/{1 + MAX_RETRIES_429}"
                         )
-                        return {
-                            "status": "success",
-                            "asset_type": asset_type,
-                            "brand_name": brand_name,
-                            "model_used": DEVELOPER_API_IMAGE_MODEL,
-                            "latency_ms": round(latency),
-                            "image_size_bytes": len(image_data.data),
-                            "image_bytes": image_data.data,
-                            "mime_type": image_data.mime_type,
-                            "description": text_desc or "Image generated successfully.",
-                        }
-            except Exception as e:
-                logger.error(
-                    f"[{session_id}] Phase: GENERATING | Action: developer_api_failed | "
-                    f"Model: {DEVELOPER_API_IMAGE_MODEL} | Error: {e}"
-                )
+                        dev_client = genai.Client(api_key=GEMINI_API_KEY)
+                        t0 = time.perf_counter()
+                        response = await dev_client.aio.models.generate_content(
+                            model=dev_model,
+                            contents=contents,
+                            config=types.GenerateContentConfig(
+                                response_modalities=["TEXT", "IMAGE"],
+                            ),
+                        )
+                        latency = (time.perf_counter() - t0) * 1000
+
+                        if response.candidates and response.candidates[0].content.parts:
+                            image_data, text_desc = self._extract_parts(response)
+                            if image_data:
+                                logger.info(
+                                    f"[{session_id}] Phase: GENERATING | Action: developer_api_success | "
+                                    f"Model: {dev_label} | Asset: {asset_type} | "
+                                    f"Latency: {latency:.0f}ms | Size: {len(image_data.data) / 1024:.0f}KB"
+                                )
+                                return {
+                                    "status": "success",
+                                    "asset_type": asset_type,
+                                    "brand_name": brand_name,
+                                    "model_used": dev_model,
+                                    "latency_ms": round(latency),
+                                    "image_size_bytes": len(image_data.data),
+                                    "image_bytes": image_data.data,
+                                    "mime_type": image_data.mime_type,
+                                    "description": text_desc or "Image generated successfully.",
+                                }
+                        logger.warning(
+                            f"[{session_id}] Phase: GENERATING | Action: developer_api_empty | "
+                            f"Model: {dev_label} | Latency: {latency:.0f}ms"
+                        )
+                        break  # empty response → next dev model
+                    except Exception as e:
+                        latency = (time.perf_counter() - t0) * 1000
+                        is_429 = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
+                        logger.error(
+                            f"[{session_id}] Phase: GENERATING | Action: developer_api_failed | "
+                            f"Model: {dev_label} | Attempt: {attempt + 1} | "
+                            f"429: {is_429} | Latency: {latency:.0f}ms | Error: {e}"
+                        )
+                        if is_429 and attempt < MAX_RETRIES_429:
+                            wait = BACKOFF_SECS[attempt] if attempt < len(BACKOFF_SECS) else 4
+                            await asyncio.sleep(wait)
+                            continue
+                        break  # non-429 or retries exhausted → next dev model
 
         return {
             "status": "error",

@@ -97,21 +97,6 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline }) 
     );
   }
 
-  if (msg.type === 'direction_proposals' && msg.directions?.length) {
-    return (
-      <NameProposals
-        names={msg.directions.map(d => ({
-          id: d.id, name: d.name, rationale: d.description,
-          recommended: d.recommended,
-        }))}
-        autoSelectSeconds={10}
-        onSelect={(name) => {
-          if (sendMessage) sendMessage({ type: 'text_input', text: `I choose ${name}` });
-        }}
-      />
-    );
-  }
-
   if (msg.type === 'brand_name_reveal') {
     return <BrandNameReveal name={msg.name} rationale={msg.rationale} />;
   }
@@ -127,10 +112,6 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline }) 
         }}
       >{msg.rationale}</motion.div>
     );
-  }
-
-  if (msg.type === 'brand_reveal') {
-    return <BrandNameReveal name={msg.name} />;
   }
 
   if (msg.type === 'tagline_reveal') {
@@ -166,7 +147,7 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline }) 
     );
   }
 
-  if ((msg.type === 'palette_reveal' || msg.type === 'palette_ready') && msg.colors?.length) {
+  if (msg.type === 'palette_reveal' && msg.colors?.length) {
     return <PaletteReveal colors={msg.colors} mood={msg.mood} />;
   }
 
@@ -179,6 +160,28 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline }) 
         brandName={brandName}
         tagline={tagline}
       />
+    );
+  }
+
+  if (msg.type === 'voiceover_generated' && msg.audio_url) {
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, ease: easeCurve }}
+        style={{
+          padding: '14px 16px',
+          border: `2px solid ${raw.line}`,
+          background: 'rgba(255,255,255,0.4)',
+        }}
+      >
+        <div style={{
+          fontSize: 8, fontWeight: 700, letterSpacing: '0.14em',
+          textTransform: 'uppercase', color: raw.faint,
+          fontFamily: fonts.body, marginBottom: 8,
+        }}>BRAND VOICEOVER</div>
+        <audio controls src={msg.audio_url} style={{ width: '100%', height: 36 }} />
+      </motion.div>
     );
   }
 
