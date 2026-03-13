@@ -26,7 +26,7 @@ VALID_TRANSITIONS: dict[AgentPhase, set[AgentPhase]] = {
     AgentPhase.ANALYZING: {AgentPhase.PROPOSING},
     AgentPhase.PROPOSING: {AgentPhase.AWAITING_INPUT},
     AgentPhase.AWAITING_INPUT: {AgentPhase.GENERATING, AgentPhase.PROPOSING},
-    AgentPhase.GENERATING: {AgentPhase.REFINING, AgentPhase.COMPLETE},
+    AgentPhase.GENERATING: {AgentPhase.REFINING, AgentPhase.COMPLETE, AgentPhase.AWAITING_INPUT},
     AgentPhase.REFINING: {AgentPhase.AWAITING_INPUT, AgentPhase.COMPLETE},
     AgentPhase.COMPLETE: set(),
 }
@@ -81,12 +81,19 @@ class Session:
     # Whether packaging asset is expected (agent decides based on product type)
     expects_packaging: bool = True
 
+    # Track background image/audio generations to await them later
+    pregen_tasks: dict = field(default_factory=dict)
+
     # Guard against runaway auto_continue loops (capped at MAX_AUTO_CONTINUE)
     auto_continue_count: int = 0
 
+    # Interrupt flag — set by receive_loop when user sends feedback during generation.
+    # agent_loop checks this between tool calls and relays feedback to Live API.
+    interrupt_text: str | None = None
+
     @property
     def total_assets(self) -> int:
-        return 4 if self.expects_packaging else 3
+        return 3
 
     @property
     def progress(self) -> float:

@@ -28,6 +28,9 @@ export default function App() {
   const messagesRef = useRef([]);
   const pendingResumeRef = useRef(null);
   const awaitingFirstConnect = useRef(false);
+  const generationDoneRef = useRef(false);
+  const voiceoverPlayedRef = useRef(false);
+  const hasVoiceoverRef = useRef(false);
 
   // Drag state lifted for UploadStage
   const [dragOnPage, setDragOnPage] = useState(false);
@@ -152,6 +155,11 @@ export default function App() {
               updated[updated.length - 1] = { ...last, type: 'agent_text', text: event.text, _partial: false };
               return updated;
             }
+            // Dedup: skip if identical to the last final agent_text
+            const lastFinal = [...prev].reverse().find(m => m.type === 'agent_text' && !m._partial);
+            if (lastFinal && lastFinal.text === event.text) return prev;
+            // Skip empty narration
+            if (!event.text || !event.text.trim()) return prev;
             return [...prev, { type: 'agent_text', text: event.text, _id: ++msgIdCounter.current }];
           });
         }
@@ -168,7 +176,6 @@ export default function App() {
         break;
 
       case 'image_generated':
-        console.log('[WS] image_generated event:', event.asset_type, event.url);
         addMessage({
           type: 'image_generated',
           url: event.url,
@@ -182,14 +189,20 @@ export default function App() {
       case 'generation_complete': {
         clearTimeout(generationTimeoutRef.current);
         const { type: _, ...kitData } = event;
-        setBrandKit({
+        setBrandKit(prev => ({
+          ...prev,
           brand_name: event.brand_name,
           asset_urls: event.asset_urls || {},
           zip_url: event.zip_url,
           ...kitData,
-        });
+        }));
         addMessage({ type: 'generation_complete' });
-        setTimeout(() => setScreen(SCREENS.RESULTS), 1500);
+        generationDoneRef.current = true;
+        // If no voiceover or voiceover already finished → transition now
+        if (!hasVoiceoverRef.current || voiceoverPlayedRef.current) {
+          setTimeout(() => setScreen(SCREENS.RESULTS), 1500);
+        }
+        // Otherwise wait for onVoiceoverEnd callback
         break;
       }
 
@@ -207,6 +220,10 @@ export default function App() {
 
       case 'brand_values':
         addMessage({ type: 'brand_values', values: event.values });
+        break;
+
+      case 'tone_of_voice':
+        addMessage({ type: 'tone_of_voice', tone: event.tone_of_voice });
         break;
 
       case 'brand_story':
@@ -249,6 +266,7 @@ export default function App() {
       case 'voiceover_generated':
         // Store audio_url in brandKit state — will be picked up on generation_complete
         setBrandKit(prev => prev ? { ...prev, audio_url: event.audio_url } : { audio_url: event.audio_url });
+        hasVoiceoverRef.current = true;
         addMessage({ type: 'voiceover_generated', audio_url: event.audio_url });
         break;
 
@@ -281,6 +299,9 @@ export default function App() {
     firstTextCaptured.current = false;
     pendingResumeRef.current = null;
     awaitingFirstConnect.current = true;
+    generationDoneRef.current = false;
+    voiceoverPlayedRef.current = false;
+    hasVoiceoverRef.current = false;
     imageFileRef.current = imageFile;
     contextTextRef.current = contextText || '';
 
@@ -296,9 +317,9 @@ export default function App() {
 
     clearTimeout(generationTimeoutRef.current);
     generationTimeoutRef.current = setTimeout(() => {
-      addMessage({ type: 'agent_text', text: 'Session timed out after 3 minutes. Please try again.' });
+      addMessage({ type: 'agent_text', text: 'Session timed out after 15 minutes. Please try again.' });
       setScreen(SCREENS.RESULTS);
-    }, 3 * 60 * 1000);
+    }, 15 * 60 * 1000);
   }, [ws, addMessage]);
 
   const handleLaunchComplete = useCallback(() => {
@@ -330,6 +351,9 @@ export default function App() {
     imageFileRef.current = null;
     pendingResumeRef.current = null;
     awaitingFirstConnect.current = false;
+    generationDoneRef.current = false;
+    voiceoverPlayedRef.current = false;
+    hasVoiceoverRef.current = false;
     setImagePreview(null);
     setFirstAgentText(null);
     firstTextCaptured.current = false;
@@ -342,6 +366,13 @@ export default function App() {
     setPhase('STOPPED');
     addMessage({ type: 'agent_text', text: 'Session paused. Type a message or say something to resume.' });
   }, [ws, addMessage]);
+
+  const handleVoiceoverEnd = useCallback(() => {
+    voiceoverPlayedRef.current = true;
+    if (generationDoneRef.current) {
+      setTimeout(() => setScreen(SCREENS.RESULTS), 1000);
+    }
+  }, []);
 
   const handleBack = useCallback(() => {
     ws.disconnect();
@@ -421,6 +452,7 @@ export default function App() {
               onBack={handleBack}
               onStop={handleStop}
               imagePreview={imagePreview}
+              onVoiceoverEnd={handleVoiceoverEnd}
             />
           </motion.div>
         )}

@@ -1,3 +1,4 @@
+import { useRef, useState, useCallback, useEffect } from 'react';
 import { motion } from 'motion/react';
 import NameProposals from './NameProposals';
 import BrandNameReveal from './BrandNameReveal';
@@ -10,7 +11,7 @@ import { raw, fonts, easeCurve } from '../styles/tokens';
 
 export { ImageTile, ProductOverlay, ImageOverlay } from './StudioHelpers';
 
-export default function MessageBubble({ msg, sendMessage, brandName, tagline }) {
+export default function MessageBubble({ msg, sendMessage, brandName, tagline, onVoiceoverEnd }) {
   if (msg.type === 'agent_thinking') {
     return (
       <motion.div
@@ -147,6 +148,27 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline }) 
     );
   }
 
+  if (msg.type === 'tone_of_voice') {
+    const doRules = msg.tone?.do || [];
+    const dontRules = msg.tone?.dont || [];
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+        style={{ padding: '16px 18px', border: `2px solid ${raw.line}`, background: 'rgba(255,255,255,0.4)' }}
+      >
+        <div style={{ fontSize: 8, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: raw.faint, fontFamily: fonts.body, marginBottom: 12 }}>TONE OF VOICE</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {doRules.map((rule, i) => (
+            <div key={`do-${i}`} style={{ fontSize: 13, color: raw.muted, display: 'flex', gap: 8 }}><span style={{ color: raw.ink, flexShrink: 0 }}>✓</span> <span>{rule}</span></div>
+          ))}
+          {dontRules.map((rule, i) => (
+            <div key={`dont-${i}`} style={{ fontSize: 13, color: raw.muted, display: 'flex', gap: 8 }}><span style={{ color: raw.red, flexShrink: 0 }}>✗</span> <span>{rule}</span></div>
+          ))}
+        </div>
+      </motion.div>
+    );
+  }
+
   if (msg.type === 'palette_reveal' && msg.colors?.length) {
     return <PaletteReveal colors={msg.colors} mood={msg.mood} />;
   }
@@ -164,25 +186,7 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline }) 
   }
 
   if (msg.type === 'voiceover_generated' && msg.audio_url) {
-    return (
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, ease: easeCurve }}
-        style={{
-          padding: '14px 16px',
-          border: `2px solid ${raw.line}`,
-          background: 'rgba(255,255,255,0.4)',
-        }}
-      >
-        <div style={{
-          fontSize: 8, fontWeight: 700, letterSpacing: '0.14em',
-          textTransform: 'uppercase', color: raw.faint,
-          fontFamily: fonts.body, marginBottom: 8,
-        }}>BRAND VOICEOVER</div>
-        <audio controls src={msg.audio_url} style={{ width: '100%', height: 36 }} />
-      </motion.div>
-    );
+    return <ChatVoiceoverPlayer audioUrl={msg.audio_url} onEnded={onVoiceoverEnd} />;
   }
 
   if (msg.type === 'tool_invoked') {
@@ -233,4 +237,116 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline }) 
   }
 
   return null;
+}
+
+function ChatVoiceoverPlayer({ audioUrl, onEnded }) {
+  const audioRef = useRef(null);
+  const [playing, setPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [currentTime, setCurrent] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  const fmt = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+  const togglePlay = useCallback(() => {
+    if (!audioRef.current) return;
+    if (playing) { audioRef.current.pause(); } else { audioRef.current.play(); }
+    setPlaying(!playing);
+  }, [playing]);
+
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    const onTime = () => { setCurrent(Math.floor(a.currentTime)); setProgress(a.duration ? a.currentTime / a.duration : 0); };
+    const onMeta = () => setDuration(Math.floor(a.duration || 0));
+    const onEnd = () => { setPlaying(false); setProgress(0); setCurrent(0); if (onEnded) onEnded(); };
+    a.addEventListener('timeupdate', onTime);
+    a.addEventListener('loadedmetadata', onMeta);
+    a.addEventListener('ended', onEnd);
+    // Autoplay
+    a.play().then(() => setPlaying(true)).catch(() => {});
+    return () => { a.removeEventListener('timeupdate', onTime); a.removeEventListener('loadedmetadata', onMeta); a.removeEventListener('ended', onEnd); };
+  }, []);
+
+  const bars = Array.from({ length: 40 }, (_, i) => ({
+    height: 6 + Math.sin(i * 0.7) * 14 + Math.random() * 8,
+    active: i / 40 <= progress,
+  }));
+
+  const seekTo = (e) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const p = (e.clientX - rect.left) / rect.width;
+    if (audioRef.current && audioRef.current.duration) {
+      audioRef.current.currentTime = p * audioRef.current.duration;
+      setProgress(p);
+      setCurrent(Math.floor(p * audioRef.current.duration));
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, ease: easeCurve }}
+    >
+      <audio ref={audioRef} src={audioUrl} preload="metadata" />
+      <div style={{
+        padding: '20px 24px',
+        border: '2px solid rgba(0,0,0,0.06)',
+        background: 'rgba(255,255,255,0.4)',
+        display: 'flex', alignItems: 'center', gap: 16,
+      }}>
+        <button onClick={togglePlay} style={{
+          width: 44, height: 44, flexShrink: 0,
+          background: raw.red, border: 'none', cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          transition: 'all 0.2s ease',
+          boxShadow: '0 4px 12px rgba(230,57,70,0.25)',
+        }}
+          onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.05)'}
+          onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
+        >
+          {playing ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
+              <rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="white">
+              <polygon points="5,3 19,12 5,21" />
+            </svg>
+          )}
+        </button>
+
+        <div style={{ flex: 1 }}>
+          <div style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            marginBottom: 8,
+          }}>
+            <div style={{
+              fontSize: 9, fontWeight: 700, color: raw.red, letterSpacing: '0.15em',
+              fontFamily: fonts.body, textTransform: 'uppercase',
+            }}>BRAND STORY</div>
+            <div style={{
+              fontSize: 11, color: 'rgba(0,0,0,0.25)',
+              fontFamily: "'SF Mono', 'Fira Code', monospace",
+            }}>{fmt(currentTime)} / {fmt(duration)}</div>
+          </div>
+
+          <div style={{
+            display: 'flex', gap: 2, alignItems: 'end', height: 28,
+            cursor: 'pointer',
+          }} onClick={seekTo}>
+            {bars.map((bar, i) => (
+              <div key={i} style={{
+                width: 3, borderRadius: 1,
+                height: bar.height,
+                background: bar.active ? raw.red : 'rgba(0,0,0,0.06)',
+                transition: 'background 0.15s ease',
+              }} />
+            ))}
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
 }

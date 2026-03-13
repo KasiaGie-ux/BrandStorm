@@ -25,7 +25,7 @@ UPLOAD_BUCKET = os.getenv("UPLOAD_BUCKET", f"bb-uploads-{GCP_PROJECT}")
 ASSETS_BUCKET = os.getenv("ASSETS_BUCKET", f"bb-assets-{GCP_PROJECT}")
 
 # Session
-SESSION_TIMEOUT_SEC = int(os.getenv("SESSION_TIMEOUT_SEC", "300"))
+SESSION_TIMEOUT_SEC = int(os.getenv("SESSION_TIMEOUT_SEC", "900"))
 SESSION_WARNING_SEC = int(os.getenv("SESSION_WARNING_SEC", "240"))
 
 # Local storage

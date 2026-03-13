@@ -13,6 +13,7 @@ from google.genai import types
 
 from models.session import Session
 from services.image_generator import ImageGenerator
+from services.pregen import PreGenerator
 from services.storage import StorageService
 from services.voiceover import generate_voiceover
 
@@ -78,14 +79,17 @@ class ToolExecutor:
         self,
         image_generator: ImageGenerator,
         storage: StorageService,
+        pregen: PreGenerator | None = None,
     ) -> None:
         self._image_gen = image_generator
         self._storage = storage
+        self._pregen = pregen
 
     async def execute(
         self,
         session: Session,
         function_call: types.FunctionCall,
+        emit_cb=None,
     ) -> tuple[types.FunctionResponse, dict | None]:
         """Execute a function call. Returns (FunctionResponse, event_to_send).
 
@@ -162,6 +166,7 @@ class ToolExecutor:
     ) -> tuple[dict, dict | None]:
         """generate_image — generate brand asset via Nano Banana Pro.
 
+        Checks pre-generated results first. Falls back to live generation.
         Validates args and fills sensible defaults from session context.
         """
         # --- Validate & default: asset_type ---
@@ -172,6 +177,31 @@ class ToolExecutor:
                 f"Got: {asset_type} | Defaulting to logo"
             )
             asset_type = "logo"
+
+        brand_name = args.get("brand_name", session.brand_name or "Brand")
+
+        # --- Check pre-generated result first ---
+        if self._pregen:
+            pregen_result = await self._pregen.get_image_result(session, asset_type)
+            if pregen_result and pregen_result.get("status") == "success":
+                url = pregen_result.get("url")
+                if url:
+                    session.mark_asset_complete(asset_type, url)
+                    logger.info(
+                        f"[{session.id}] Phase: GENERATING | Action: pregen_image_hit | "
+                        f"Asset: {asset_type} | URL: {url} | "
+                        f"Progress: {session.progress}"
+                    )
+                    event = {
+                        "type": "image_generated",
+                        "asset_type": asset_type,
+                        "url": url,
+                        "label": _ASSET_LABELS.get(asset_type, asset_type).title(),
+                        "description": pregen_result.get("description", ""),
+                        "brand_name": brand_name,
+                        "progress": session.progress,
+                    }
+                    return pregen_result, event
 
         # --- Validate & default: prompt ---
         prompt = args.get("prompt", "")
@@ -189,7 +219,6 @@ class ToolExecutor:
                 f"Asset: {asset_type} | Default prompt: {prompt[:80]}"
             )
 
-        brand_name = args.get("brand_name", session.brand_name or "Brand")
         style_anchor = args.get("style_anchor", "")
         aspect_ratio = args.get("aspect_ratio")
 
@@ -199,9 +228,9 @@ class ToolExecutor:
 
         # Build reference images for chaining:
         # - logo: text-only (no product photo in the logo)
-        # - hero_lifestyle / instagram_post / packaging: product + logo as references
+        # - hero_lifestyle / instagram_post: product + logo as references
         ref_images = []
-        if asset_type in ("hero_lifestyle", "instagram_post", "packaging"):
+        if asset_type in ("hero_lifestyle", "instagram_post"):
             if session.product_image_bytes:
                 resized = _resize_image_bytes(
                     session.product_image_bytes, session.product_image_mime,
@@ -217,7 +246,7 @@ class ToolExecutor:
 
         # Enrich prompt: product + logo must be visible in the output
         enriched_prompt = prompt
-        if asset_type in ("hero_lifestyle", "instagram_post", "packaging") and ref_images:
+        if asset_type in ("hero_lifestyle", "instagram_post") and ref_images:
             enriched_prompt += (
                 " IMPORTANT: The generated image MUST prominently feature the exact product "
                 "from the reference photo. The brand logo must be clearly visible and "
@@ -225,7 +254,7 @@ class ToolExecutor:
             )
 
         # Append palette hex values if available
-        if session.palette and asset_type in ("hero_lifestyle", "instagram_post", "packaging"):
+        if session.palette and asset_type in ("hero_lifestyle", "instagram_post"):
             hex_list = ", ".join(
                 c.get("hex", "") for c in session.palette if c.get("hex")
             )
@@ -326,8 +355,9 @@ class ToolExecutor:
     ) -> tuple[dict, dict | None]:
         """generate_palette — agent decides colors, we store them.
 
-        Requires at minimum mood OR style_anchor. Colors array is required
-        but we default to empty if missing.
+        If pre-gen palette is available, returns it instantly.
+        Otherwise uses agent-provided colors. Requires at minimum mood OR
+        style_anchor. Colors array is required but we default to empty if missing.
         """
         mood = args.get("mood", "")
         style_anchor = args.get("style_anchor", "")
@@ -342,19 +372,30 @@ class ToolExecutor:
 
         product_colors = args.get("product_colors", [])
 
-        # Store palette colors on session for chaining to image generation
-        colors = args.get("colors", [])
+        # Check pre-generated palette first
+        colors = None
+        if self._pregen and self._pregen.has_palette(session):
+            colors = session.palette
+            logger.info(
+                f"[{session.id}] Phase: GENERATING | Action: pregen_palette_hit | "
+                f"Colors: {len(colors)}"
+            )
+
+        # Fall back to agent-provided colors
+        if not colors:
+            colors = args.get("colors", [])
+            if colors:
+                validated = []
+                for c in colors:
+                    if isinstance(c, dict) and c.get("hex"):
+                        validated.append({
+                            "hex": c["hex"],
+                            "role": c.get("role", "unknown"),
+                            "name": c.get("name", ""),
+                        })
+                colors = validated
+
         if colors:
-            # Validate each color has at least hex
-            validated = []
-            for c in colors:
-                if isinstance(c, dict) and c.get("hex"):
-                    validated.append({
-                        "hex": c["hex"],
-                        "role": c.get("role", "unknown"),
-                        "name": c.get("name", ""),
-                    })
-            colors = validated
             session.palette = colors
             logger.info(
                 f"[{session.id}] Phase: GENERATING | Action: palette_stored | "
@@ -366,20 +407,51 @@ class ToolExecutor:
             "message": (
                 "Palette acknowledged. Now output your font pairing using "
                 "[FONT_SUGGESTION] tags (heading and body fonts with rationale). "
-                "After that, proceed to generate the logo."
+                "Do NOT mention logo or images yet — just fonts."
             ),
             "mood": mood,
             "style_anchor": style_anchor,
             "product_colors": product_colors,
         }
         # Emit palette_reveal (structured event for frontend rendering)
-        event = {"type": "palette_reveal", "mood": mood, "colors": colors}
+        event = {"type": "palette_reveal", "mood": mood, "colors": colors or []}
         return result, event
 
     async def _handle_voiceover(
         self, session: Session, args: dict,
     ) -> tuple[dict, dict | None]:
-        """generate_voiceover — narrate brand story via Gemini TTS."""
+        """generate_voiceover — narrate brand story via Gemini TTS.
+
+        If background voiceover already completed (fired on brand_story),
+        returns the existing URL instantly.
+        """
+        # Check if background voiceover already finished
+        if session.audio_url:
+            logger.info(
+                f"[{session.id}] Phase: GENERATING | Action: voiceover_already_done | "
+                f"URL: {session.audio_url}"
+            )
+            return (
+                {"status": "success", "audio_url": session.audio_url},
+                {"type": "voiceover_generated", "audio_url": session.audio_url},
+            )
+
+        # Check if background task is still running — await it
+        bg_task = session.pregen_tasks.get("voiceover")
+        if bg_task and not bg_task.done():
+            logger.info(
+                f"[{session.id}] Phase: GENERATING | Action: voiceover_awaiting_bg"
+            )
+            try:
+                await bg_task
+            except Exception:
+                pass
+            if session.audio_url:
+                return (
+                    {"status": "success", "audio_url": session.audio_url},
+                    {"type": "voiceover_generated", "audio_url": session.audio_url},
+                )
+
         text = args.get("text", session.brand_story or "")
         mood = args.get("mood", "luxury")
 

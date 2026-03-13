@@ -13,6 +13,7 @@ from config import LIVE_API_MODEL
 from services import brand_state
 from services.gemini_live import build_live_config, create_client
 from services.image_generator import ImageGenerator
+from services.pregen import PreGenerator
 from services.storage import StorageService
 from services.tool_executor import ToolExecutor
 
@@ -32,7 +33,8 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
     client = create_client()
     storage = StorageService()
     image_gen = ImageGenerator(client)
-    tool_executor = ToolExecutor(image_gen, storage)
+    pregen = PreGenerator(image_gen, storage)
+    tool_executor = ToolExecutor(image_gen, storage, pregen)
 
     try:
         live_config = build_live_config()
@@ -72,7 +74,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
                 name="receive",
             )
             agent_task = asyncio.create_task(
-                agent_loop(ws, live_session, session, tool_executor),
+                agent_loop(ws, live_session, session, tool_executor, pregen),
                 name="agent",
             )
             keepalive_task = asyncio.create_task(

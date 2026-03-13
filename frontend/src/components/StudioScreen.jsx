@@ -11,9 +11,10 @@ const DISPLAY_TYPES = [
   'name_proposals',
   'image_generated', 'tool_invoked', 'generation_complete',
   'palette_reveal', 'palette_ready', 'font_suggestion',
+  'voiceover_generated',
 ];
 
-export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, imagePreview }) {
+export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, imagePreview, onVoiceoverEnd }) {
   const scrollRef = useRef(null);
   const [input, setInput] = useState('');
   const [showOverlay, setShowOverlay] = useState(false);
@@ -67,6 +68,8 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
     if (!DISPLAY_TYPES.includes(m.type)) return false;
     // Hide tool_invoked spinner if a result for this tool exists later in messages
     if (m.type === 'tool_invoked' && m.tool) {
+      // Voiceover runs in background — never show its spinner
+      if (m.tool === 'generate_voiceover') return false;
       const resultType = TOOL_RESULT_MAP[m.tool];
       if (resultType) {
         const hasResult = messages.slice(i + 1).some(later => later.type === resultType);
@@ -142,9 +145,9 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
       {/* Messages */}
       <div ref={scrollRef} style={{
         flex: 1, overflow: 'auto', padding: '24px 24px 16px',
-        display: 'flex', flexDirection: 'column', gap: 16,
         maxWidth: 640, width: '100%', margin: '0 auto',
       }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {displayMessages.map((msg) => {
             const key = msg._id != null ? `m-${msg._id}` : `m-${msg.type}-${msg.url || msg.name || ''}`;
             if (msg.type === 'image_generated') {
@@ -157,9 +160,11 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
                 sendMessage={sendMessage}
                 brandName={brandName}
                 tagline={tagline}
+                onVoiceoverEnd={onVoiceoverEnd}
               />
             );
           })}
+        </div>
       </div>
 
       {/* Input bar */}

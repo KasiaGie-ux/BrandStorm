@@ -121,7 +121,7 @@ export function ImageTile({ msg, onImageClick, onImageLoad }) {
       transition={{ duration: 0.5, ease: easeCurve }}
       style={{
         width: '100%', position: 'relative',
-        borderRadius: 4,
+        overflow: 'hidden', flexShrink: 0,
         background: '#f5f5f3',
         cursor: failed ? 'default' : 'pointer',
         minHeight: 160,
@@ -185,14 +185,7 @@ export function ImageTile({ msg, onImageClick, onImageLoad }) {
         fontFamily: fonts.body, textTransform: 'uppercase',
       }}>{label}</div>
 
-      {msg.description && (
-        <div style={{
-          padding: '10px 14px', fontSize: 12, color: raw.muted,
-          fontFamily: fonts.body, borderTop: `1px solid ${raw.line}`,
-          position: 'relative', zIndex: 1,
-          background: raw.cream,
-        }}>{msg.description}</div>
-      )}
+
     </motion.div>
   );
 }

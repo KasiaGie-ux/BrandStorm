@@ -39,7 +39,7 @@ _VALUES_RE = re.compile(
 _HEX_RE = re.compile(r'(#[0-9a-fA-F]{3,6})\b')
 
 # Track already-emitted event types to deduplicate
-_DEDUP_TYPES = {"brand_name_reveal", "tagline_reveal", "brand_story", "brand_values"}
+_DEDUP_TYPES = {"brand_name_reveal", "tagline_reveal", "brand_story", "brand_values", "tone_of_voice"}
 
 
 def parse_agent_text(
@@ -126,7 +126,10 @@ _TOOL_NARRATION_RE = re.compile(
     r"The prompt will (?:include|be)|"
     r"I'll invoke|I will invoke|"
     r"calling generate_|calling analyze_|calling finalize_|"
-    r"I'll generate|I will generate the"
+    r"I'll generate|I will generate the|"
+    r"Let me create your logo|Let me generate|Let me design|"
+    r"Now let's (?:create|generate|design)|Now I'll (?:create|generate|design)|"
+    r"Time to create|Time to generate"
     r").*$",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -157,6 +160,9 @@ def _parse_tag(tag_name: str, content: str) -> dict | None:
         if tag_name == "BRAND_VALUES":
             values = [v.strip() for v in content.split(",") if v.strip()]
             return {"type": "brand_values", "values": values}
+
+        if tag_name == "TONE_OF_VOICE":
+            return _parse_tone_of_voice(content)
 
         if tag_name == "DIRECTION_PROPOSALS":
             # Direction proposals removed — agent decides direction autonomously.
@@ -256,6 +262,45 @@ def _parse_name_proposals(content: str) -> dict:
         "type": "name_proposals",
         "names": names,
         "auto_select_seconds": 10,
+    }
+
+
+def _parse_tone_of_voice(content: str) -> dict:
+    """Parse tone of voice from pipe-delimited lines.
+    
+    Format:
+    do|The rule to do
+    dont|The rule to avoid
+    """
+    dos = []
+    donts = []
+    
+    for line in content.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Support both | and : as delimiters
+        if "|" in line:
+            parts = [p.strip() for p in line.split("|", 1)]
+        elif ":" in line:
+            parts = [p.strip() for p in line.split(":", 1)]
+        else:
+            continue
+
+        if len(parts) == 2:
+            kind, rule = parts[0].lower(), parts[1]
+            if kind in ("do", "dos"):
+                dos.append(rule)
+            elif kind in ("dont", "don't", "do not", "donts"):
+                donts.append(rule)
+                
+    return {
+        "type": "tone_of_voice",
+        "tone_of_voice": {
+            "do": dos,
+            "dont": donts
+        }
     }
 
 

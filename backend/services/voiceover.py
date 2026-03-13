@@ -5,7 +5,9 @@ Picks a voice that matches the brand mood/style anchor.
 Returns WAV bytes or None on failure.
 """
 
+import io
 import logging
+import struct
 import time
 from pathlib import Path
 
@@ -29,6 +31,11 @@ VOICE_MAP: dict[str, str] = {
 DEFAULT_VOICE = "Kore"
 TTS_MODEL = "gemini-2.5-flash-preview-tts"
 
+# Gemini TTS returns raw PCM: 24kHz, 16-bit, mono (little-endian).
+_PCM_SAMPLE_RATE = 24000
+_PCM_BITS_PER_SAMPLE = 16
+_PCM_CHANNELS = 1
+
 
 def _pick_voice(mood: str) -> str:
     """Pick a TTS voice based on mood string."""
@@ -42,6 +49,37 @@ def _pick_voice(mood: str) -> str:
         if key in mood_lower or mood_lower in key:
             return voice
     return DEFAULT_VOICE
+
+
+def _wrap_pcm_as_wav(pcm_data: bytes) -> bytes:
+    """Wrap raw PCM bytes in a valid WAV header so browsers can play it.
+
+    Gemini TTS returns headerless PCM (24kHz, 16-bit, mono).
+    """
+    data_size = len(pcm_data)
+    byte_rate = _PCM_SAMPLE_RATE * _PCM_CHANNELS * (_PCM_BITS_PER_SAMPLE // 8)
+    block_align = _PCM_CHANNELS * (_PCM_BITS_PER_SAMPLE // 8)
+
+    buf = io.BytesIO()
+    # RIFF header
+    buf.write(b"RIFF")
+    buf.write(struct.pack("<I", 36 + data_size))  # file size - 8
+    buf.write(b"WAVE")
+    # fmt chunk
+    buf.write(b"fmt ")
+    buf.write(struct.pack("<I", 16))               # chunk size
+    buf.write(struct.pack("<H", 1))                # PCM format
+    buf.write(struct.pack("<H", _PCM_CHANNELS))
+    buf.write(struct.pack("<I", _PCM_SAMPLE_RATE))
+    buf.write(struct.pack("<I", byte_rate))
+    buf.write(struct.pack("<H", block_align))
+    buf.write(struct.pack("<H", _PCM_BITS_PER_SAMPLE))
+    # data chunk
+    buf.write(b"data")
+    buf.write(struct.pack("<I", data_size))
+    buf.write(pcm_data)
+
+    return buf.getvalue()
 
 
 async def generate_voiceover(
@@ -99,14 +137,17 @@ async def generate_voiceover(
         ):
             for part in response.candidates[0].content.parts:
                 if part.inline_data and part.inline_data.mime_type.startswith("audio/"):
-                    audio_bytes = part.inline_data.data
+                    raw_pcm = part.inline_data.data
+                    # Gemini TTS returns raw PCM — wrap in WAV header
+                    # so browsers can play it natively.
+                    wav_bytes = _wrap_pcm_as_wav(raw_pcm)
                     latency = (time.perf_counter() - t0) * 1000
                     logger.info(
                         f"[{session_id}] Phase: GENERATING | Action: voiceover_success | "
-                        f"Voice: {voice} | Size: {len(audio_bytes)} bytes | "
-                        f"Latency: {latency:.0f}ms"
+                        f"Voice: {voice} | PCM: {len(raw_pcm)} bytes | "
+                        f"WAV: {len(wav_bytes)} bytes | Latency: {latency:.0f}ms"
                     )
-                    return audio_bytes
+                    return wav_bytes
 
         logger.warning(
             f"[{session_id}] Phase: GENERATING | Action: voiceover_no_audio | "

@@ -146,7 +146,7 @@ class ImageGenerator:
                     "image_size_bytes": len(image_data.data),
                     "image_bytes": image_data.data,
                     "mime_type": image_data.mime_type,
-                    "description": text_desc or "Image generated successfully.",
+                    "description": "Image generation completed successfully.",
                 }
 
             except TimeoutError:

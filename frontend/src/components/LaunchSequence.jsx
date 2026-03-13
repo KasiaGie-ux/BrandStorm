@@ -94,7 +94,7 @@ export default function LaunchSequence({ imagePreview, firstAgentText, onComplet
               <div key={i} style={{
                 position: 'absolute',
                 inset: i * 8,
-                borderRadius: 4,
+                borderRadius: 0,
                 border: `1.5px solid ${raw.red}`,
                 opacity: exploded ? 0 : (step >= 4 ? 0.6 : 0.3),
                 transform: exploded

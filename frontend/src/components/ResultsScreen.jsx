@@ -435,7 +435,7 @@ export default function ResultsScreen({ brandKit, sessionId, onReset }) {
         <div style={{
           position: 'sticky', top: 0, zIndex: 20,
           padding: '16px 56px', background: 'rgba(250,246,241,0.9)',
-          backdropFilter: 'blur(20px)', borderBottom: '1px solid rgba(0,0,0,0.05)',
+          borderBottom: '1px solid rgba(0,0,0,0.05)',
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         }}>
           <div style={{
@@ -443,9 +443,9 @@ export default function ResultsScreen({ brandKit, sessionId, onReset }) {
             color: raw.ink, fontFamily: fonts.body, textTransform: 'uppercase',
           }}>BRANDSTORM®</div>
           <div style={{
-            padding: '6px 16px', background: 'rgba(5,150,105,0.08)',
-            border: '1px solid rgba(5,150,105,0.15)',
-            fontSize: 11, fontWeight: 600, color: '#059669', fontFamily: fonts.body,
+            padding: '6px 16px', background: 'rgba(26,26,26,0.06)',
+            border: `1px solid ${raw.line}`,
+            fontSize: 11, fontWeight: 600, color: raw.ink, fontFamily: fonts.body,
           }}>✓ BRAND KIT COMPLETE</div>
         </div>
       </FadeUp>
@@ -570,7 +570,7 @@ export default function ResultsScreen({ brandKit, sessionId, onReset }) {
                         fontSize: 13, color: 'rgba(0,0,0,0.5)', lineHeight: 1.5,
                         fontFamily: fonts.body,
                       }}>
-                        <span style={{ color: '#059669', fontWeight: 700, fontSize: 14, lineHeight: '20px' }}>✓</span>
+                        <span style={{ color: raw.ink, fontWeight: 700, fontSize: 14, lineHeight: '20px' }}>✓</span>
                         {rule}
                       </div>
                     ))}
