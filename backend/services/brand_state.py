@@ -94,6 +94,9 @@ def infer_phase_from_tool(session: Session, tool_name: str) -> None:
     """Infer and update phase based on which tool the agent called."""
     phase_map = {
         "analyze_product": AgentPhase.ANALYZING,
+        "propose_names": AgentPhase.PROPOSING,
+        "reveal_brand_identity": AgentPhase.PROPOSING,
+        "suggest_fonts": AgentPhase.GENERATING,
         "generate_image": AgentPhase.GENERATING,
         "generate_palette": AgentPhase.GENERATING,
         "generate_voiceover": AgentPhase.GENERATING,

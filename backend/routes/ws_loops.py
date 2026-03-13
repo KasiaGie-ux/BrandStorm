@@ -19,7 +19,7 @@ from services.pregen import PreGenerator
 from services.storage import StorageService
 from services.text_parser import parse_agent_text
 from services.tool_executor import ToolExecutor
-from services.voiceover import generate_voiceover
+from services.voiceover import generate_voiceover  # kept for legacy; bg task uses _tts_generate
 
 logger = logging.getLogger("brand-agent")
 
@@ -67,24 +67,26 @@ def _store_event_on_session(
         session.tagline = event["tagline"]
     elif etype == "brand_story" and event.get("story"):
         session.brand_story = event["story"]
-        # Fire voiceover in background immediately — don't wait for agent.
-        # Only stores result on session; the agent's generate_voiceover tool
-        # call will emit the event to frontend (so it appears at the right
-        # moment in the chat, preceded by agent narration).
+        # Background pre-generate ONLY the story narration (Kore/Anna voice)
+        # so it's ready when generate_voiceover tool is called.
+        # The handoff text comes from the agent at tool call time.
         if not session.audio_url:
             _storage = StorageService()
 
             async def _bg_voiceover():
                 try:
-                    wav = await generate_voiceover(
+                    from config import NARRATOR_VOICE
+                    from services.voiceover import _tts_generate
+                    wav = await _tts_generate(
                         session_id=session.id,
                         text=event["story"],
-                        mood="luxury",
+                        voice=NARRATOR_VOICE,
+                        label="bg_voiceover_story",
                     )
                     if wav:
                         url = await _storage.upload_image(
                             session_id=session.id,
-                            asset_type="voiceover",
+                            asset_type="voiceover_story",
                             image_bytes=wav,
                             mime_type="audio/wav",
                         )
@@ -128,7 +130,7 @@ async def _flush_and_emit(
     between each one. This is the backend fix for the bug where the UI would
     render the entire brand reveal in a single frame.
     """
-    if not text:
+    if not text or not text.strip():
         return
     session.add_transcript("agent", text)
     events, narration = parse_agent_text(text, seen_types=seen_types)
@@ -161,7 +163,7 @@ async def send_json(ws: WebSocket, data: dict) -> None:
     """Send JSON to frontend, silently ignore if closed."""
     try:
         await ws.send_json(data)
-        if data.get("type") in ("image_generated", "palette_reveal", "generation_complete"):
+        if data.get("type") in ("image_generated", "palette_reveal", "generation_complete", "voiceover_handoff", "voiceover_story"):
             logger.info(f"[WS→FE] Sent {data['type']} | keys={list(data.keys())}")
     except Exception as e:
         logger.warning(f"WebSocket send failed: {e} | type={data.get('type')}")
@@ -184,6 +186,18 @@ async def receive_loop(
                 logger.info(f"[{session.id}] Action: text_input | Text: {text[:80]} | Phase: {session.phase.value}")
                 session.add_transcript("user", text)
 
+                # Detect name selection ("I choose Aurum") and store
+                # brand_name early so auto-continue can fire after turn
+                _lower = text.lower().strip()
+                if _lower.startswith("i choose "):
+                    chosen = text[len("I choose "):].strip()
+                    if chosen and not session.brand_name:
+                        session.brand_name = chosen
+                        logger.info(
+                            f"[{session.id}] Action: name_selected_early | "
+                            f"Name: {chosen}"
+                        )
+
                 # If a tool is currently executing, queue feedback for relay
                 # between tool calls so the agent sees it at a safe point.
                 if session.phase == AgentPhase.GENERATING:
@@ -193,16 +207,38 @@ async def receive_loop(
                         f"Text: {text[:80]} | Phase: GENERATING"
                     )
                 else:
+                    # Check for positive signals to clear feedback gate
+                    _pos_signals = [
+                        "super", "ok", "great", "love", "nice",
+                        "perfect", "good", "yes", "tak", "dobr",
+                        "swietn", "fajn", "podoba", "continue",
+                        "dalej", "kontynuuj", "👍", "👏",
+                    ]
+                    if session.awaiting_feedback and any(s in _lower for s in _pos_signals):
+                        session.awaiting_feedback = False
+                        logger.info(f"[{session.id}] Action: feedback_gate_cleared | Text: {text[:40]}")
+
                     # During AWAITING_INPUT with active brand flow,
                     # wrap user text so agent classifies feedback properly
                     if session.phase == AgentPhase.AWAITING_INPUT and session.brand_name:
-                        wrapped = (
-                            f"USER INPUT: {text}\n"
-                            "Classify: if positive/neutral → continue the flow. "
-                            "If negative about something specific → fix that thing only. "
-                            "If vague negative → ask what to change. "
-                            "If name change → propose 3 new names."
-                        )
+                        if session.awaiting_feedback:
+                            # Still in feedback loop — negative about the regen
+                            wrapped = (
+                                f"USER INPUT: {text}\n"
+                                "The user is responding to a regenerated asset. "
+                                "If positive → acknowledge briefly, then continue generating remaining assets. "
+                                "If still negative → fix ONLY that specific thing again. "
+                                "ASK if they like the new version."
+                            )
+                        else:
+                            wrapped = (
+                                f"USER INPUT: {text}\n"
+                                "Classify: if positive/neutral → continue the flow. "
+                                "If negative about a SPECIFIC asset (logo, colors, fonts, image) → "
+                                "fix ONLY that thing, do NOT change name or restart. "
+                                "If vague negative → ask what to change. "
+                                "ONLY if they explicitly say they don't like the NAME → propose 3 new names."
+                            )
                     else:
                         wrapped = text
                     await live_session.send_client_content(
@@ -304,8 +340,9 @@ async def agent_loop(
     session_active = True
 
     async def _emit_cb(ev: dict):
-        """Callback for pregen to emit events to frontend."""
+        """Callback for tool executor + pregen to emit events to frontend."""
         await send_json(ws, ev)
+        _store_event_on_session(session, ev, pregen=pregen, emit_cb=None)
 
     try:
         async with asyncio.timeout(SESSION_TIMEOUT_SEC):
@@ -361,16 +398,24 @@ async def agent_loop(
                                 f"Turn: {turn_count} | Text length: {len(full_text)} | "
                                 f"Preview: {full_text[:120]}"
                             )
-                            await _flush_and_emit(
-                                ws, session, full_text, seen_event_types,
-                                pregen=pregen, emit_cb=_emit_cb,
-                            )
+                            if full_text.strip():
+                                await _flush_and_emit(
+                                    ws, session, full_text, seen_event_types,
+                                    pregen=pregen, emit_cb=_emit_cb,
+                                )
+                            else:
+                                # Close any dangling partial on frontend
+                                await send_json(ws, {
+                                    "type": "agent_text",
+                                    "text": "",
+                                    "partial": False,
+                                })
                             agent_text_buffer.clear()
 
                             if session.phase == AgentPhase.ANALYZING:
                                 brand_state.transition_phase(session, AgentPhase.PROPOSING)
                                 brand_state.transition_phase(session, AgentPhase.AWAITING_INPUT)
-                            elif session.phase == AgentPhase.GENERATING:
+                            elif session.phase in (AgentPhase.GENERATING, AgentPhase.PROPOSING):
                                 brand_state.transition_phase(session, AgentPhase.AWAITING_INPUT)
 
                             logger.info(f"[{session.id}] Action: turn_complete | Turn: {turn_count} | Msgs: {msg_count}")
@@ -391,15 +436,41 @@ async def agent_loop(
                                 session.phase == AgentPhase.AWAITING_INPUT
                                 and session.auto_continue_count < _MAX_AUTO_CONTINUE
                                 and session.brand_name  # at minimum we need a brand name
+                                and not session.awaiting_feedback  # wait for user approval after regen
                             )
 
-                            if should_continue and not session.palette:
-                                # Case A: brand name chosen but no palette yet
+                            if should_continue and not session.tagline and session.brand_name:
+                                # Case A0: name chosen but brand identity not revealed yet
                                 session.auto_continue_count += 1
                                 nudge = (
-                                    "Great. Now call generate_palette with your chosen colors. "
-                                    "After that, output your font pairing using [FONT_SUGGESTION] tags. "
-                                    "Do NOT mention logo or images yet — just colors and fonts."
+                                    f"The user chose the name '{session.brand_name}'. "
+                                    "Say a confident, product-specific comment about why this name fits "
+                                    "(reference what you see in the product photo), then IMMEDIATELY call "
+                                    "reveal_brand_identity with brand_name, tagline, brand_story, "
+                                    "brand_values, and tone_of_voice_do/dont. "
+                                    "Do NOT propose new names. Do NOT ask questions."
+                                )
+                                logger.info(
+                                    f"[{session.id}] Action: auto_continue_reveal | "
+                                    f"Attempt: {session.auto_continue_count}/{_MAX_AUTO_CONTINUE} | "
+                                    f"Name: {session.brand_name}"
+                                )
+                                brand_state.transition_phase(session, AgentPhase.GENERATING)
+                                await live_session.send_client_content(
+                                    turns=[types.Content(
+                                        role="user",
+                                        parts=[types.Part.from_text(text=nudge)],
+                                    )],
+                                    turn_complete=True,
+                                )
+                            elif should_continue and not session.palette:
+                                # Case A: brand identity revealed but no palette yet
+                                session.auto_continue_count += 1
+                                nudge = (
+                                    "Now call generate_palette with 5 colors. "
+                                    "After palette returns, say 1 sentence about the color story, "
+                                    "then call suggest_fonts with heading and body fonts. "
+                                    "Do NOT mention logo or images."
                                 )
                                 logger.info(
                                     f"[{session.id}] Action: auto_continue_palette | "
@@ -417,24 +488,18 @@ async def agent_loop(
                                 # Case B: palette done, images remaining
                                 session.auto_continue_count += 1
                                 done = ", ".join(session.completed_assets) or "none"
-                                if not session.completed_assets:
-                                    nudge = (
-                                        "Continue. Output exactly ONE short evocative sentence about the logo, "
-                                        "then IMMEDIATELY call generate_image with asset_type 'logo'. "
-                                        "Do NOT output more than one sentence. Do NOT repeat yourself."
-                                    )
-                                else:
-                                    remaining_types = [
-                                        a for a in ["logo", "hero_lifestyle", "instagram_post"]
-                                        if a not in session.completed_assets
-                                    ]
-                                    next_asset = remaining_types[0] if remaining_types else "next"
-                                    label = {"hero_lifestyle": "lifestyle hero", "instagram_post": "Instagram post"}.get(next_asset, next_asset)
-                                    nudge = (
-                                        f"Continue. Output exactly ONE short evocative sentence about the {label}, "
-                                        f"then IMMEDIATELY call generate_image with asset_type '{next_asset}'. "
-                                        f"Do NOT output more than one sentence. Do NOT repeat yourself."
-                                    )
+                                remaining_types = [
+                                    a for a in ["logo", "hero_lifestyle", "instagram_post"]
+                                    if a not in session.completed_assets
+                                ]
+                                next_asset = remaining_types[0] if remaining_types else "logo"
+                                label = {"logo": "logo", "hero_lifestyle": "lifestyle hero", "instagram_post": "Instagram post"}.get(next_asset, next_asset)
+                                nudge = (
+                                    f"Continue. Say ONE very short sentence (under 10 words) about the {label}, "
+                                    f"then IMMEDIATELY call generate_image with asset_type '{next_asset}'. "
+                                    f"The image may return instantly. After it returns, "
+                                    f"move to the next asset right away — do NOT pause."
+                                )
                                 logger.info(
                                     f"[{session.id}] Action: auto_continue | "
                                     f"Attempt: {session.auto_continue_count}/{_MAX_AUTO_CONTINUE} | "
@@ -448,20 +513,24 @@ async def agent_loop(
                                     )],
                                     turn_complete=True,
                                 )
-                            elif should_continue and session.palette and remaining == 0 and not session.zip_url:
+                            elif (session.phase == AgentPhase.AWAITING_INPUT
+                                    and session.auto_continue_count < _MAX_AUTO_CONTINUE
+                                    and session.brand_name
+                                    and session.palette and remaining == 0 and not session.zip_url):
                                 # Case C: all images done but not finalized yet
+                                # Clear feedback gate — finalization should never be blocked
+                                session.awaiting_feedback = False
                                 session.auto_continue_count += 1
-                                if not session.audio_url:
-                                    nudge = (
-                                        "All images are done. Now call generate_voiceover with the brand story, "
-                                        "then call finalize_brand_kit. You MUST call the tools."
-                                    )
-                                else:
-                                    nudge = (
-                                        "Everything is ready. Now call finalize_brand_kit with "
-                                        "brand_name, tagline, brand_story, brand_values, and tone_of_voice. "
-                                        "You MUST call the tool."
-                                    )
+                                # Call generate_voiceover with dual-voice params (handoff_text
+                                # + narration_text), then finalize_brand_kit.
+                                nudge = (
+                                    "All images are done. Now write a natural handoff line for yourself "
+                                    "(Charon) introducing Anna who will narrate the brand story, "
+                                    "and write Anna's full narration (her greeting + brand story). "
+                                    "Then call generate_voiceover with handoff_text, narration_text, and mood. "
+                                    "After that, call finalize_brand_kit. "
+                                    "You MUST call both tools in this turn."
+                                )
                                 logger.info(
                                     f"[{session.id}] Action: auto_continue_finalize | "
                                     f"Attempt: {session.auto_continue_count}/{_MAX_AUTO_CONTINUE} | "
@@ -511,6 +580,7 @@ async def agent_loop(
 
                             if event:
                                 await send_json(ws, event)
+                                _store_event_on_session(session, event, pregen=pregen, emit_cb=None)
 
                             await live_session.send_tool_response(
                                 function_responses=[fn_response]
@@ -545,6 +615,8 @@ async def agent_loop(
                                 _is_positive = any(s in _lower for s in _positive_signals)
 
                                 if _is_positive:
+                                    # Clear feedback gate — user approves, let auto-continue resume
+                                    session.awaiting_feedback = False
                                     # Positive feedback — just relay and let agent continue
                                     await live_session.send_client_content(
                                         turns=[types.Content(
@@ -560,26 +632,33 @@ async def agent_loop(
                                         turn_complete=True,
                                     )
                                 else:
-                                    # Negative or ambiguous — cancel pregen, classify
-                                    if pregen:
-                                        pregen.cancel(session)
+                                    # Negative or ambiguous — block auto-continue until user approves
+                                    session.awaiting_feedback = True
                                     await live_session.send_client_content(
                                         turns=[types.Content(
                                             role="user",
                                             parts=[types.Part.from_text(
                                                 text=(
                                                     f"USER FEEDBACK (needs attention): {interrupt}\n"
-                                                    "STOP generating new assets. Classify the feedback:\n"
-                                                    "- NEGATIVE about a SPECIFIC asset (e.g. 'change the logo', "
-                                                    "'darker colors') → acknowledge, regenerate ONLY that asset, "
-                                                    "then continue from where you were.\n"
-                                                    "- NEGATIVE but VAGUE (e.g. 'I don't like it', 'start over') → "
-                                                    "ASK what specifically they want changed. Be direct: "
-                                                    "'What would you like me to change — the name, colors, fonts, "
-                                                    "or something else?' Do NOT guess.\n"
-                                                    "- NAME CHANGE (e.g. 'I don't like the name', 'rename it') → "
-                                                    "propose 3 new names, then redo ALL brand identity + assets.\n"
-                                                    "React like a smart creative director."
+                                                    "Classify the feedback CAREFULLY:\n"
+                                                    "- LOGO feedback (e.g. 'change the logo', 'don't like the logo', "
+                                                    "'nie podoba mi się logo') → say 'Let me create a new logo', "
+                                                    "then call generate_image with asset_type 'logo' and a DIFFERENT prompt. "
+                                                    "Do NOT change the name, colors, fonts, or anything else.\n"
+                                                    "- COLOR feedback (e.g. 'darker colors', 'change palette') → "
+                                                    "call generate_palette with different colors. Keep everything else.\n"
+                                                    "- FONT feedback → call suggest_fonts with different fonts.\n"
+                                                    "- IMAGE feedback (e.g. 'change the hero', 'different instagram') → "
+                                                    "call generate_image for ONLY that specific asset_type.\n"
+                                                    "- VAGUE NEGATIVE (e.g. 'I don't like it', 'start over') → "
+                                                    "ASK what specifically they want changed. Do NOT guess.\n"
+                                                    "- NAME CHANGE (ONLY if they explicitly mention the name, e.g. "
+                                                    "'I don't like the name', 'rename it', 'change the brand name') → "
+                                                    "propose 3 new names.\n"
+                                                    "CRITICAL: Do NOT restart from scratch unless the user explicitly "
+                                                    "asks to change the NAME. Logo ≠ name. Colors ≠ name.\n"
+                                                    "After regenerating, ASK the user if they like the new version. "
+                                                    "Wait for their response before continuing with other assets."
                                                 ),
                                             )],
                                         )],

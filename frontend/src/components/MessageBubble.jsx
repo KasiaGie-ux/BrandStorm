@@ -11,7 +11,7 @@ import { raw, fonts, easeCurve } from '../styles/tokens';
 
 export { ImageTile, ProductOverlay, ImageOverlay } from './StudioHelpers';
 
-export default function MessageBubble({ msg, sendMessage, brandName, tagline, onVoiceoverEnd }) {
+export default function MessageBubble({ msg, sendMessage, brandName, tagline, onVoiceoverEnd, nameNarrationDone }) {
   if (msg.type === 'agent_thinking') {
     return (
       <motion.div
@@ -91,6 +91,7 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline, on
       <NameProposals
         names={msg.names}
         autoSelectSeconds={msg.auto_select_seconds || 10}
+        narrationDone={nameNarrationDone}
         onSelect={(name) => {
           if (sendMessage) sendMessage({ type: 'text_input', text: `I choose ${name}` });
         }}
@@ -185,7 +186,11 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline, on
     );
   }
 
-  if (msg.type === 'voiceover_generated' && msg.audio_url) {
+  if (msg.type === 'voiceover_handoff') {
+    return <ChatHandoffText text={msg.text} audioUrl={msg.audio_url} />;
+  }
+
+  if (msg.type === 'voiceover_story' && msg.audio_url) {
     return <ChatVoiceoverPlayer audioUrl={msg.audio_url} onEnded={onVoiceoverEnd} />;
   }
 
@@ -210,7 +215,15 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline, on
             borderTopColor: 'transparent',
           }}
         />
-        {msg.tool?.replace(/_/g, ' ') || 'Working'}...
+        {({
+          generate_image: 'Creating visual',
+          generate_palette: 'Building palette',
+          propose_names: 'Preparing names',
+          reveal_brand_identity: 'Revealing brand',
+          suggest_fonts: 'Selecting typography',
+          generate_voiceover: 'Recording voiceover',
+          finalize_brand_kit: 'Packaging brand kit',
+        }[msg.tool] || msg.tool?.replace(/_/g, ' ') || 'Working')}...
       </motion.div>
     );
   }
@@ -239,6 +252,30 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline, on
   return null;
 }
 
+function ChatHandoffText({ text, audioUrl }) {
+  const audioRef = useRef(null);
+
+  useEffect(() => {
+    if (!audioRef.current || !audioUrl) return;
+    audioRef.current.play().catch(() => {});
+  }, [audioUrl]);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease: easeCurve }}
+      style={{
+        fontSize: 13, color: raw.muted, fontFamily: fonts.body,
+        fontStyle: 'italic', padding: '4px 0',
+      }}
+    >
+      {audioUrl && <audio ref={audioRef} src={audioUrl} preload="auto" />}
+      {text || 'Handing off to our narrator...'}
+    </motion.div>
+  );
+}
+
 function ChatVoiceoverPlayer({ audioUrl, onEnded }) {
   const audioRef = useRef(null);
   const [playing, setPlaying] = useState(false);
@@ -263,9 +300,11 @@ function ChatVoiceoverPlayer({ audioUrl, onEnded }) {
     a.addEventListener('timeupdate', onTime);
     a.addEventListener('loadedmetadata', onMeta);
     a.addEventListener('ended', onEnd);
-    // Autoplay
-    a.play().then(() => setPlaying(true)).catch(() => {});
-    return () => { a.removeEventListener('timeupdate', onTime); a.removeEventListener('loadedmetadata', onMeta); a.removeEventListener('ended', onEnd); };
+    // Autoplay with slight delay (allows handoff audio to finish first)
+    const timer = setTimeout(() => {
+      a.play().then(() => setPlaying(true)).catch(() => {});
+    }, 500);
+    return () => { clearTimeout(timer); a.removeEventListener('timeupdate', onTime); a.removeEventListener('loadedmetadata', onMeta); a.removeEventListener('ended', onEnd); };
   }, []);
 
   const bars = Array.from({ length: 40 }, (_, i) => ({
@@ -325,7 +364,7 @@ function ChatVoiceoverPlayer({ audioUrl, onEnded }) {
             <div style={{
               fontSize: 9, fontWeight: 700, color: raw.red, letterSpacing: '0.15em',
               fontFamily: fonts.body, textTransform: 'uppercase',
-            }}>BRAND STORY</div>
+            }}>BRAND STORY NARRATION</div>
             <div style={{
               fontSize: 11, color: 'rgba(0,0,0,0.25)',
               fontFamily: "'SF Mono', 'Fira Code', monospace",

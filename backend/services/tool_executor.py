@@ -15,7 +15,7 @@ from models.session import Session
 from services.image_generator import ImageGenerator
 from services.pregen import PreGenerator
 from services.storage import StorageService
-from services.voiceover import generate_voiceover
+from services.voiceover import generate_voiceover, _tts_generate
 
 logger = logging.getLogger("brand-agent")
 
@@ -115,12 +115,18 @@ class ToolExecutor:
         try:
             if name == "analyze_product":
                 result, event = await self._handle_analyze(session, args)
+            elif name == "propose_names":
+                result, event = await self._handle_propose_names(session, args)
+            elif name == "reveal_brand_identity":
+                result, event = await self._handle_reveal_brand_identity(session, args, emit_cb=emit_cb)
+            elif name == "suggest_fonts":
+                result, event = await self._handle_suggest_fonts(session, args)
             elif name == "generate_image":
                 result, event = await self._handle_generate_image(session, args)
             elif name == "generate_palette":
                 result, event = await self._handle_generate_palette(session, args)
             elif name == "generate_voiceover":
-                result, event = await self._handle_voiceover(session, args)
+                result, event = await self._handle_voiceover(session, args, emit_cb=emit_cb)
             elif name == "finalize_brand_kit":
                 result, event = await self._handle_finalize(session, args)
             else:
@@ -160,6 +166,133 @@ class ToolExecutor:
             "next_step": "Propose 2-3 creative brand directions based on your visual analysis, then proceed to generate assets.",
         }
         return result, None
+
+    async def _handle_propose_names(
+        self, session: Session, args: dict,
+    ) -> tuple[dict, dict | None]:
+        """propose_names — present 3 brand name proposals to user."""
+        names = args.get("names", [])
+        if not names:
+            return {"status": "error", "error": "No names provided"}, None
+
+        # Validate and normalize
+        validated = []
+        for i, n in enumerate(names[:3]):
+            if isinstance(n, dict) and n.get("name"):
+                validated.append({
+                    "id": i + 1,
+                    "name": n["name"],
+                    "rationale": n.get("rationale", ""),
+                    **({"recommended": True} if n.get("recommended") else {}),
+                })
+
+        logger.info(
+            f"[{session.id}] Phase: PROPOSING | Action: propose_names | "
+            f"Names: {[n['name'] for n in validated]}"
+        )
+
+        event = {
+            "type": "name_proposals",
+            "names": validated,
+            "auto_select_seconds": 8,
+        }
+        result = {
+            "status": "success",
+            "message": "Name proposals displayed. Wait for user to pick one.",
+            "names": [n["name"] for n in validated],
+        }
+        return result, event
+
+    async def _handle_reveal_brand_identity(
+        self, session: Session, args: dict,
+        emit_cb=None,
+    ) -> tuple[dict, dict | None]:
+        """reveal_brand_identity — emit brand name, tagline, story, values, tone."""
+        import asyncio
+
+        brand_name = args.get("brand_name", session.brand_name or "Brand")
+        tagline = args.get("tagline", "")
+        brand_story = args.get("brand_story", "")
+        brand_values = args.get("brand_values", [])
+        tone_do = args.get("tone_of_voice_do", [])
+        tone_dont = args.get("tone_of_voice_dont", [])
+
+        session.brand_name = brand_name
+        session.tagline = tagline
+        session.brand_story = brand_story
+        session.brand_values = brand_values
+        session.tone_of_voice = {"do": tone_do, "dont": tone_dont}
+
+        logger.info(
+            f"[{session.id}] Phase: PROPOSING | Action: reveal_brand_identity | "
+            f"Name: {brand_name} | Tagline: {tagline[:50]}"
+        )
+
+        # Emit events sequentially with stagger so frontend animates them
+        events = [
+            {"type": "brand_name_reveal", "name": brand_name},
+        ]
+        if tagline:
+            events.append({"type": "tagline_reveal", "tagline": tagline})
+        if brand_story:
+            events.append({"type": "brand_story", "story": brand_story})
+        if brand_values:
+            events.append({"type": "brand_values", "values": brand_values})
+        if tone_do or tone_dont:
+            events.append({
+                "type": "tone_of_voice",
+                "tone_of_voice": {"do": tone_do, "dont": tone_dont},
+            })
+
+        # Emit all except the last via callback; return the last as the event
+        if emit_cb and len(events) > 1:
+            for ev in events[:-1]:
+                await emit_cb(ev)
+                await asyncio.sleep(1.0)
+            last_event = events[-1]
+        elif events:
+            last_event = events[0]
+        else:
+            last_event = None
+
+        result = {
+            "status": "success",
+            "brand_name": brand_name,
+            "message": "Brand identity revealed. Now call generate_palette.",
+        }
+        return result, last_event
+
+    async def _handle_suggest_fonts(
+        self, session: Session, args: dict,
+    ) -> tuple[dict, dict | None]:
+        """suggest_fonts — emit font suggestion to frontend."""
+        heading_font = args.get("heading_font", "")
+        heading_style = args.get("heading_style", "")
+        body_font = args.get("body_font", "")
+        body_style = args.get("body_style", "")
+        rationale = args.get("rationale", "")
+
+        session.font_suggestion = {
+            "heading": {"family": heading_font, "style": heading_style},
+            "body": {"family": body_font, "style": body_style},
+        }
+
+        logger.info(
+            f"[{session.id}] Phase: GENERATING | Action: suggest_fonts | "
+            f"Heading: {heading_font} | Body: {body_font}"
+        )
+
+        event = {
+            "type": "font_suggestion",
+            "heading": {"family": heading_font, "google_fonts": True, "style": heading_style},
+            "body": {"family": body_font, "google_fonts": True, "style": body_style},
+            "rationale": rationale,
+        }
+        result = {
+            "status": "success",
+            "message": "Fonts displayed. Now generate images starting with the logo.",
+        }
+        return result, event
 
     async def _handle_generate_image(
         self, session: Session, args: dict,
@@ -405,9 +538,9 @@ class ToolExecutor:
         result = {
             "status": "success",
             "message": (
-                "Palette acknowledged. Now output your font pairing using "
-                "[FONT_SUGGESTION] tags (heading and body fonts with rationale). "
-                "Do NOT mention logo or images yet — just fonts."
+                "Palette displayed. Now say ONE sentence about the color story, "
+                "then IMMEDIATELY call suggest_fonts with heading and body fonts. "
+                "Do NOT mention logo or images yet."
             ),
             "mood": mood,
             "style_anchor": style_anchor,
@@ -419,24 +552,29 @@ class ToolExecutor:
 
     async def _handle_voiceover(
         self, session: Session, args: dict,
+        emit_cb=None,
     ) -> tuple[dict, dict | None]:
-        """generate_voiceover — narrate brand story via Gemini TTS.
+        """generate_voiceover — dual-voice brand story via Gemini TTS.
 
-        If background voiceover already completed (fired on brand_story),
-        returns the existing URL instantly.
+        Generates TWO audio files:
+        1. voiceover_handoff.wav — Charon's handoff line
+        2. voiceover_story.wav — Anna/Kore's brand story narration
+
+        Emits two sequential events: voiceover_handoff, then voiceover_story.
+        Only voiceover_story URL is stored as session.audio_url (the deliverable).
         """
-        # Check if background voiceover already finished
-        if session.audio_url:
-            logger.info(
-                f"[{session.id}] Phase: GENERATING | Action: voiceover_already_done | "
-                f"URL: {session.audio_url}"
-            )
-            return (
-                {"status": "success", "audio_url": session.audio_url},
-                {"type": "voiceover_generated", "audio_url": session.audio_url},
-            )
+        handoff_text = args.get("handoff_text", "")
+        narration_text = args.get("narration_text", args.get("text", session.brand_story or ""))
+        mood = args.get("mood", "luxury")
 
-        # Check if background task is still running — await it
+        if not narration_text:
+            logger.warning(
+                f"[{session.id}] Phase: GENERATING | Action: voiceover_no_text | "
+                f"No narration text available for voiceover"
+            )
+            return {"status": "skipped", "reason": "No narration text provided"}, None
+
+        # Await background task if still running
         bg_task = session.pregen_tasks.get("voiceover")
         if bg_task and not bg_task.done():
             logger.info(
@@ -446,51 +584,83 @@ class ToolExecutor:
                 await bg_task
             except Exception:
                 pass
-            if session.audio_url:
-                return (
-                    {"status": "success", "audio_url": session.audio_url},
-                    {"type": "voiceover_generated", "audio_url": session.audio_url},
-                )
 
-        text = args.get("text", session.brand_story or "")
-        mood = args.get("mood", "luxury")
+        # Reuse cached story audio if background TTS already finished
+        cached_story_url = session.audio_url
 
-        if not text:
-            logger.warning(
-                f"[{session.id}] Phase: GENERATING | Action: voiceover_no_text | "
-                f"No brand story text available for voiceover"
+        result = {"status": "success"}
+        last_event = None
+
+        # --- Generate & emit handoff (Charon's voice) ---
+        if handoff_text:
+            from config import LIVE_API_VOICE
+            handoff_wav = await _tts_generate(
+                session_id=session.id,
+                text=handoff_text,
+                voice=LIVE_API_VOICE,
+                label="voiceover_handoff",
             )
-            return {"status": "skipped", "reason": "No text provided"}, None
+            if handoff_wav:
+                handoff_url = await self._storage.upload_image(
+                    session_id=session.id,
+                    asset_type="voiceover_handoff",
+                    image_bytes=handoff_wav,
+                    mime_type="audio/wav",
+                )
+                logger.info(
+                    f"[{session.id}] Phase: GENERATING | Action: voiceover_handoff_stored | "
+                    f"URL: {handoff_url} | Size: {len(handoff_wav)} bytes"
+                )
+                result["handoff_url"] = handoff_url
+                handoff_event = {
+                    "type": "voiceover_handoff",
+                    "audio_url": handoff_url,
+                    "text": handoff_text,
+                }
+                if emit_cb:
+                    await emit_cb(handoff_event)
 
-        audio_bytes = await generate_voiceover(
-            session_id=session.id,
-            text=text,
-            mood=mood,
-        )
+        # --- Story narration (Anna's voice) — reuse cached if available ---
+        if cached_story_url:
+            logger.info(
+                f"[{session.id}] Phase: GENERATING | Action: voiceover_story_cached | "
+                f"URL: {cached_story_url}"
+            )
+            story_url = cached_story_url
+        else:
+            # Generate story narration fresh
+            from config import NARRATOR_VOICE
+            story_wav = await _tts_generate(
+                session_id=session.id,
+                text=narration_text,
+                voice=NARRATOR_VOICE,
+                label="voiceover_story",
+            )
+            if not story_wav:
+                logger.warning(
+                    f"[{session.id}] Phase: GENERATING | Action: voiceover_story_failed"
+                )
+                return {"status": "skipped", "reason": "TTS generation failed"}, None
 
-        if not audio_bytes:
-            return {"status": "skipped", "reason": "TTS generation failed"}, None
+            story_url = await self._storage.upload_image(
+                session_id=session.id,
+                asset_type="voiceover_story",
+                image_bytes=story_wav,
+                mime_type="audio/wav",
+            )
+            session.audio_url = story_url
+            logger.info(
+                f"[{session.id}] Phase: GENERATING | Action: voiceover_story_stored | "
+                f"URL: {story_url} | Size: {len(story_wav)} bytes"
+            )
 
-        # Upload audio to storage
-        url = await self._storage.upload_image(
-            session_id=session.id,
-            asset_type="voiceover",
-            image_bytes=audio_bytes,
-            mime_type="audio/wav",
-        )
-        session.audio_url = url
-
-        logger.info(
-            f"[{session.id}] Phase: GENERATING | Action: voiceover_stored | "
-            f"URL: {url} | Size: {len(audio_bytes)} bytes"
-        )
-
-        result = {"status": "success", "audio_url": url}
-        event = {
-            "type": "voiceover_generated",
-            "audio_url": url,
+        result["audio_url"] = story_url
+        last_event = {
+            "type": "voiceover_story",
+            "audio_url": story_url,
         }
-        return result, event
+
+        return result, last_event
 
     async def _handle_finalize(
         self, session: Session, args: dict,

@@ -2,27 +2,51 @@ import { useRef, useEffect, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import ProgressTracker from './ProgressTracker';
 import MessageBubble, { ImageTile, ProductOverlay, ImageOverlay } from './MessageBubble';
+import useAudioInput from '../hooks/useAudioInput';
+import VoiceIndicator from './VoiceIndicator';
 import { raw, fonts } from '../styles/tokens';
 
 const DISPLAY_TYPES = [
   'agent_text', 'agent_narration', 'user',
   'brand_reveal', 'brand_name_reveal', 'brand_name_reveal_rationale',
-  'tagline_reveal', 'brand_values', 'brand_story',
+  'tagline_reveal', 'brand_values', 'brand_story', 'tone_of_voice',
   'name_proposals',
   'image_generated', 'tool_invoked', 'generation_complete',
   'palette_reveal', 'palette_ready', 'font_suggestion',
-  'voiceover_generated',
+  'voiceover_handoff', 'voiceover_story',
 ];
 
-export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, imagePreview, onVoiceoverEnd }) {
+export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, imagePreview, onVoiceoverEnd, audioPlayback }) {
   const scrollRef = useRef(null);
   const [input, setInput] = useState('');
   const [showOverlay, setShowOverlay] = useState(false);
   const [imageOverlay, setImageOverlay] = useState(null);
 
-  const brandName = messages.find(m => m.type === 'brand_name_reveal')?.name
-    || messages.find(m => m.type === 'brand_reveal')?.name || '';
-  const tagline = messages.find(m => m.type === 'tagline_reveal')?.tagline || '';
+  // Mic input — sends PCM chunks to backend as audio_chunk events
+  const handleAudioChunk = useCallback((base64Data) => {
+    sendMessage({ type: 'audio_chunk', data: base64Data });
+  }, [sendMessage]);
+
+  const audioInput = useAudioInput({
+    onChunk: handleAudioChunk,
+  });
+
+  const handleMicToggle = useCallback(() => {
+    // Ensure AudioContext is initialized (requires user gesture)
+    audioPlayback?.ensureContext();
+    if (audioInput.isRecording) {
+      audioInput.stop();
+    } else {
+      // Barge-in: stop agent audio when user starts recording
+      audioPlayback?.flush();
+      audioInput.start();
+    }
+  }, [audioInput, audioPlayback]);
+
+  // Use the LAST brand name/tagline (supports name changes mid-flow)
+  const brandName = [...messages].reverse().find(m => m.type === 'brand_name_reveal')?.name
+    || [...messages].reverse().find(m => m.type === 'brand_reveal')?.name || '';
+  const tagline = [...messages].reverse().find(m => m.type === 'tagline_reveal')?.tagline || '';
 
   const completedEvents = [];
   messages.forEach(m => {
@@ -61,23 +85,98 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
   const TOOL_RESULT_MAP = {
     generate_image: 'image_generated',
     generate_palette: 'palette_reveal',
+    propose_names: 'name_proposals',
+    reveal_brand_identity: 'brand_name_reveal',
+    suggest_fonts: 'font_suggestion',
     finalize_brand_kit: 'generation_complete',
-    generate_voiceover: 'voiceover_generated',
+    generate_voiceover: 'voiceover_story',
   };
+  // Build ranges where agent_text should be hidden
+  // (narration between each name_proposals and the next brand_name_reveal)
+  const hideRanges = [];
+  let lastProposalIdx = -1;
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].type === 'name_proposals') {
+      // Close any unclosed range
+      if (lastProposalIdx !== -1) hideRanges.push([lastProposalIdx, i]);
+      lastProposalIdx = i;
+    } else if (messages[i].type === 'brand_name_reveal' && lastProposalIdx !== -1) {
+      hideRanges.push([lastProposalIdx, i]);
+      lastProposalIdx = -1;
+    }
+  }
+  // If proposals still open (no reveal yet), hide through end
+  if (lastProposalIdx !== -1) hideRanges.push([lastProposalIdx, messages.length]);
+
+  // The LAST name_proposals is the active one for countdown
+  const lastProposalMsgIdx = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'name_proposals') return i;
+    }
+    return -1;
+  })();
+
+  // Find the index of the LAST brand_name_reveal to detect name changes.
+  // Images from before the last name reveal are stale and should be hidden.
+  const lastRevealIdx = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'brand_name_reveal') return i;
+    }
+    return -1;
+  })();
+  // Count how many brand_name_reveal events exist (> 1 means name changed)
+  const revealCount = messages.filter(m => m.type === 'brand_name_reveal').length;
+
   const displayMessages = messages.filter((m, i) => {
     if (!DISPLAY_TYPES.includes(m.type)) return false;
     // Hide tool_invoked spinner if a result for this tool exists later in messages
     if (m.type === 'tool_invoked' && m.tool) {
-      // Voiceover runs in background — never show its spinner
-      if (m.tool === 'generate_voiceover') return false;
+      // These tools are instant or background — never show their spinner
+      if (['generate_voiceover', 'propose_names', 'reveal_brand_identity', 'suggest_fonts'].includes(m.tool)) return false;
       const resultType = TOOL_RESULT_MAP[m.tool];
       if (resultType) {
         const hasResult = messages.slice(i + 1).some(later => later.type === resultType);
         if (hasResult) return false;
       }
     }
+    // Hide agent_text inside any name narration range
+    if (m.type === 'agent_text' && hideRanges.some(([start, end]) => i > start && i < end)) {
+      return false;
+    }
+    // After a name change, hide stale structured events from the previous brand
+    // (images, palette, fonts, old brand reveal, old values, etc.)
+    if (revealCount > 1 && lastRevealIdx !== -1 && i < lastRevealIdx) {
+      const staleTypes = [
+        'image_generated', 'palette_reveal', 'font_suggestion',
+        'brand_name_reveal', 'tagline_reveal', 'brand_story',
+        'brand_values', 'tone_of_voice', 'name_proposals',
+      ];
+      if (staleTypes.includes(m.type)) return false;
+    }
     return true;
   });
+  // Countdown starts only after agent finishes narrating all 3 names.
+  // Two gates: agent_turn_complete must fire AND agent audio must stop playing.
+  const hasAgentTurnCompleteAfterProposals = lastProposalMsgIdx !== -1
+    && messages.slice(lastProposalMsgIdx + 1).some(m => m.type === 'agent_turn_complete');
+  const agentAudioPlaying = audioPlayback?.isPlaying ?? false;
+
+  const [nameNarrationDone, setNameNarrationDone] = useState(false);
+  const lastProposalIdxRef = useRef(-1);
+
+  useEffect(() => {
+    // Reset if proposals changed (new round)
+    if (lastProposalMsgIdx !== lastProposalIdxRef.current) {
+      lastProposalIdxRef.current = lastProposalMsgIdx;
+      setNameNarrationDone(false);
+    }
+
+    // Agent finished generating AND audio finished playing → narration done
+    if (hasAgentTurnCompleteAfterProposals && !agentAudioPlaying && !nameNarrationDone && lastProposalMsgIdx !== -1) {
+      setNameNarrationDone(true);
+    }
+  }, [hasAgentTurnCompleteAfterProposals, agentAudioPlaying, lastProposalMsgIdx, nameNarrationDone]);
+
   const isGenerating = phase === 'GENERATING' || phase === 'REFINING';
   const isStopped = phase === 'STOPPED';
 
@@ -133,6 +232,43 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
 
           <div style={{ flex: 1 }} />
 
+          {/* Voice indicator — pulses when agent is speaking */}
+          {audioPlayback?.isPlaying && (
+            <VoiceIndicator analyserRef={audioPlayback.analyser} />
+          )}
+
+          {/* Mute/unmute agent audio */}
+          {audioPlayback && (
+            <button
+              type="button"
+              aria-label={audioPlayback.muted ? 'Unmute agent' : 'Mute agent'}
+              onClick={() => audioPlayback.setMuted(v => !v)}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                padding: 4, display: 'flex', alignItems: 'center',
+                color: audioPlayback.muted ? raw.faint : raw.ink,
+                transition: 'color 0.2s',
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                {audioPlayback.muted ? (
+                  <>
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                    <line x1="23" y1="9" x2="17" y2="15" />
+                    <line x1="17" y1="9" x2="23" y2="15" />
+                  </>
+                ) : (
+                  <>
+                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+                    <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                  </>
+                )}
+              </svg>
+            </button>
+          )}
+
           <span style={{
             fontFamily: fonts.mono, fontSize: 10, color: raw.faint,
             textTransform: 'uppercase', letterSpacing: '0.1em',
@@ -161,6 +297,7 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
                 brandName={brandName}
                 tagline={tagline}
                 onVoiceoverEnd={onVoiceoverEnd}
+                nameNarrationDone={nameNarrationDone}
               />
             );
           })}
@@ -202,11 +339,56 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
           padding: '10px 14px',
           background: 'rgba(255,255,255,0.4)',
         }}>
+          {/* Mic button */}
+          <button
+            type="button"
+            aria-label={audioInput.isRecording ? 'Stop recording' : 'Start recording'}
+            onClick={handleMicToggle}
+            title={audioInput.permissionDenied ? 'Microphone unavailable — type instead' : ''}
+            disabled={audioInput.permissionDenied}
+            style={{
+              width: 34, height: 34,
+              border: audioInput.isRecording ? `2px solid ${raw.red}` : `2px solid ${raw.line}`,
+              cursor: audioInput.permissionDenied ? 'not-allowed' : 'pointer',
+              background: audioInput.isRecording ? raw.red : 'transparent',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              transition: 'all 0.2s', flexShrink: 0,
+              opacity: audioInput.permissionDenied ? 0.4 : 1,
+              position: 'relative',
+            }}
+          >
+            {/* Recording pulse */}
+            {audioInput.isRecording && (
+              <span style={{
+                position: 'absolute', top: -2, right: -2,
+                width: 8, height: 8, background: raw.red,
+                animation: 'micPulse 1s ease-in-out infinite',
+              }} />
+            )}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+              stroke={audioInput.isRecording ? raw.white : raw.muted}
+              strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+              style={{ transition: 'stroke 0.2s' }}
+            >
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+              <line x1="12" y1="19" x2="12" y2="23" />
+              <line x1="8" y1="23" x2="16" y2="23" />
+            </svg>
+          </button>
+
+          {audioInput.isRecording && (
+            <span style={{
+              fontSize: 11, color: raw.red, fontFamily: fonts.body,
+              fontWeight: 600, whiteSpace: 'nowrap',
+            }}>Listening...</span>
+          )}
+
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-            placeholder="Tell the agent what you think..."
+            placeholder={audioInput.isRecording ? 'Or type here...' : 'Tell the agent what you think...'}
             style={{
               flex: 1, border: 'none', background: 'transparent',
               fontSize: 14, color: raw.ink, fontFamily: fonts.body,
@@ -274,6 +456,13 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
           />
         )}
       </AnimatePresence>
+
+      <style>{`
+        @keyframes micPulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.4; transform: scale(1.4); }
+        }
+      `}</style>
     </div>
   );
 }

@@ -1,41 +1,69 @@
+import { useRef, useEffect, useState } from 'react';
 import { raw } from '../styles/tokens';
 
-export default function VoiceIndicator({ active = false, size = 36 }) {
-  const ringCount = 3;
+/**
+ * VoiceIndicator — pulsing rings synced to actual agent audio output.
+ * Reads frequency data from an AnalyserNode ref.
+ */
+export default function VoiceIndicator({ analyserRef }) {
+  const [level, setLevel] = useState(0);
+  const rafRef = useRef(null);
+
+  useEffect(() => {
+    const analyser = analyserRef?.current;
+    if (!analyser) return;
+
+    const data = new Uint8Array(analyser.frequencyBinCount);
+
+    const tick = () => {
+      analyser.getByteFrequencyData(data);
+      // Average across frequency bins, normalize to 0–1
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) sum += data[i];
+      const avg = sum / data.length / 255;
+      setLevel(avg);
+      rafRef.current = requestAnimationFrame(tick);
+    };
+
+    rafRef.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [analyserRef]);
+
+  const baseSize = 18;
+  const scale1 = 1 + level * 0.6;
+  const scale2 = 1 + level * 1.2;
+  const opacity1 = 0.3 + level * 0.4;
+  const opacity2 = 0.15 + level * 0.3;
+
   return (
     <div style={{
-      width: size, height: size, position: 'relative',
+      position: 'relative', width: baseSize, height: baseSize,
       display: 'flex', alignItems: 'center', justifyContent: 'center',
+      flexShrink: 0,
     }}>
-      {Array.from({ length: ringCount }).map((_, i) => (
-        <div key={i} style={{
-          position: 'absolute',
-          width: size - i * 6, height: size - i * 6,
-          borderRadius: '50%',
-          border: `1.5px solid ${raw.red}`,
-          opacity: active ? 0.4 - i * 0.1 : 0.1,
-          transform: active ? `scale(${1 + i * 0.15})` : 'scale(1)',
-          transition: 'all 0.4s ease',
-          animation: active ? `voicePulse 1.6s ${i * 0.2}s ease-in-out infinite` : 'none',
-        }} />
-      ))}
-      {/* Mic icon */}
-      <svg width={size * 0.4} height={size * 0.4} viewBox="0 0 24 24"
-        fill="none" stroke={raw.red} strokeWidth="2"
-        strokeLinecap="round" strokeLinejoin="round"
-        style={{ position: 'relative', zIndex: 1 }}
-      >
-        <rect x="9" y="1" width="6" height="11" rx="3" />
-        <path d="M19 10v2a7 7 0 01-14 0v-2" />
-        <line x1="12" y1="19" x2="12" y2="23" />
-        <line x1="8" y1="23" x2="16" y2="23" />
-      </svg>
-      <style>{`
-        @keyframes voicePulse {
-          0%, 100% { transform: scale(1); opacity: 0.3; }
-          50% { transform: scale(1.25); opacity: 0.15; }
-        }
-      `}</style>
+      {/* Outer ring */}
+      <div style={{
+        position: 'absolute',
+        width: baseSize, height: baseSize,
+        border: `2px solid ${raw.red}`,
+        opacity: opacity2,
+        transform: `scale(${scale2})`,
+        transition: 'transform 0.08s, opacity 0.08s',
+      }} />
+      {/* Inner ring */}
+      <div style={{
+        position: 'absolute',
+        width: baseSize, height: baseSize,
+        border: `2px solid ${raw.red}`,
+        opacity: opacity1,
+        transform: `scale(${scale1})`,
+        transition: 'transform 0.08s, opacity 0.08s',
+      }} />
+      {/* Center dot */}
+      <div style={{
+        width: 6, height: 6,
+        background: raw.red,
+      }} />
     </div>
   );
 }

@@ -6,6 +6,7 @@ import LaunchSequence from './components/LaunchSequence';
 import StudioScreen from './components/StudioScreen';
 import ResultsScreen from './components/ResultsScreen';
 import useWebSocket from './hooks/useWebSocket';
+import useAudioPlayback from './hooks/useAudioPlayback';
 import { raw, easeCurve } from './styles/tokens';
 
 const SCREENS = { HERO: 'hero', UPLOAD: 'upload', LAUNCH: 'launch', STUDIO: 'studio', RESULTS: 'results' };
@@ -31,6 +32,9 @@ export default function App() {
   const generationDoneRef = useRef(false);
   const voiceoverPlayedRef = useRef(false);
   const hasVoiceoverRef = useRef(false);
+
+  // Audio playback for agent voice
+  const audioPlayback = useAudioPlayback();
 
   // Drag state lifted for UploadStage
   const [dragOnPage, setDragOnPage] = useState(false);
@@ -150,6 +154,15 @@ export default function App() {
         } else {
           setMessages(prev => {
             const last = prev[prev.length - 1];
+            // If empty text, just close any dangling partial without adding new message
+            if (!event.text || !event.text.trim()) {
+              if (last && last.type === 'agent_text' && last._partial) {
+                const updated = [...prev];
+                updated[updated.length - 1] = { ...last, _partial: false };
+                return updated;
+              }
+              return prev;
+            }
             if (last && last.type === 'agent_text' && last._partial) {
               const updated = [...prev];
               updated[updated.length - 1] = { ...last, type: 'agent_text', text: event.text, _partial: false };
@@ -158,8 +171,6 @@ export default function App() {
             // Dedup: skip if identical to the last final agent_text
             const lastFinal = [...prev].reverse().find(m => m.type === 'agent_text' && !m._partial);
             if (lastFinal && lastFinal.text === event.text) return prev;
-            // Skip empty narration
-            if (!event.text || !event.text.trim()) return prev;
             return [...prev, { type: 'agent_text', text: event.text, _id: ++msgIdCounter.current }];
           });
         }
@@ -260,14 +271,39 @@ export default function App() {
         break;
 
       case 'agent_audio':
+        if (event.data) {
+          audioPlayback.queueChunk(event.data);
+        }
+        break;
+
+      case 'agent_audio_end':
+        audioPlayback.flush();
+        break;
+
       case 'ping':
         break;
 
-      case 'voiceover_generated':
-        // Store audio_url in brandKit state — will be picked up on generation_complete
+      case 'voiceover_handoff':
+        // Stop agent's Live API audio so it doesn't overlap with Anna
+        audioPlayback.flush();
+        // Charon's handoff line — small muted text + auto-play audio
+        addMessage({ type: 'voiceover_handoff', audio_url: event.audio_url, text: event.text });
+        break;
+
+      case 'voiceover_story':
+        // Stop any remaining agent audio before Anna speaks
+        audioPlayback.flush();
+        // Anna's brand story narration — the deliverable
         setBrandKit(prev => prev ? { ...prev, audio_url: event.audio_url } : { audio_url: event.audio_url });
         hasVoiceoverRef.current = true;
-        addMessage({ type: 'voiceover_generated', audio_url: event.audio_url });
+        addMessage({ type: 'voiceover_story', audio_url: event.audio_url });
+        break;
+
+      case 'voiceover_generated':
+        // Legacy single-voice fallback
+        setBrandKit(prev => prev ? { ...prev, audio_url: event.audio_url } : { audio_url: event.audio_url });
+        hasVoiceoverRef.current = true;
+        addMessage({ type: 'voiceover_story', audio_url: event.audio_url });
         break;
 
       case 'session_timeout':
@@ -327,6 +363,9 @@ export default function App() {
   }, []);
 
   const handleSendMessage = useCallback((msg) => {
+    // Barge-in: stop agent audio when user sends anything
+    audioPlayback.flush();
+
     if (msg.type === 'text_input') {
       addMessage({ type: 'user', text: msg.text });
     }
@@ -453,6 +492,7 @@ export default function App() {
               onStop={handleStop}
               imagePreview={imagePreview}
               onVoiceoverEnd={handleVoiceoverEnd}
+              audioPlayback={audioPlayback}
             />
           </motion.div>
         )}

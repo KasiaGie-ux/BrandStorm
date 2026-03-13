@@ -91,6 +91,11 @@ class Session:
     # agent_loop checks this between tool calls and relays feedback to Live API.
     interrupt_text: str | None = None
 
+    # Set True after negative feedback triggers asset regeneration.
+    # Blocks auto-continue so agent asks user if they like the new version.
+    # Cleared when user sends positive feedback or continues.
+    awaiting_feedback: bool = False
+
     @property
     def total_assets(self) -> int:
         return 3

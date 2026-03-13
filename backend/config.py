@@ -12,13 +12,15 @@ IMAGE_MODEL_FALLBACK = os.getenv("IMAGE_MODEL_FALLBACK", "gemini-2.5-flash-image
 IMAGE_MODEL_FALLBACK_2 = os.getenv("IMAGE_MODEL_FALLBACK_2", "gemini-2.0-flash-preview-image-generation")  # Flash image gen — separate quota
 
 # === Text / Reasoning ===
-TEXT_MODEL = os.getenv("TEXT_MODEL", "gemini-3.1-pro-preview")              # Latest SOTA reasoning
+TEXT_MODEL = os.getenv("TEXT_MODEL", "gemini-2.5-pro")                      # Stable, GA — 3.1-pro-preview not available in all projects
 TEXT_MODEL_FALLBACK = os.getenv("TEXT_MODEL_FALLBACK", "gemini-2.5-pro")    # Stable, GA
 
 # === Live API (voice conversation) ===
 LIVE_API_MODEL = os.getenv("LIVE_API_MODEL", "gemini-2.0-flash-live-preview-04-09")  # Official Vertex AI Live API model — supports function calling + TEXT+AUDIO
 LIVE_API_MODEL_DEV = os.getenv("LIVE_API_MODEL_DEV", "gemini-2.5-flash-native-audio-preview-12-2025")  # Dev API preview
 LIVE_API_FALLBACK = os.getenv("LIVE_API_FALLBACK", "gemini-2.5-flash")      # Basic Live API, worse voice
+LIVE_API_VOICE = os.getenv("LIVE_API_VOICE", "Charon")                     # Voice name for Live API (Charon, Kore, Fenrir, Aoede, Puck, etc.)
+NARRATOR_VOICE = os.getenv("NARRATOR_VOICE", "Kore")                      # Voice for brand story narration (Anna/Kore — warm, polished female voice)
 
 # Storage
 UPLOAD_BUCKET = os.getenv("UPLOAD_BUCKET", f"bb-uploads-{GCP_PROJECT}")

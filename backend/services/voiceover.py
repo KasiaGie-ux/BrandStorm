@@ -1,10 +1,11 @@
 """Voiceover generation via Gemini TTS.
 
 Uses gemini-2.5-flash-preview-tts to narrate the brand story.
-Picks a voice that matches the brand mood/style anchor.
+Supports dual-voice: Charon (handoff) + Kore/Anna (brand story narration).
 Returns WAV bytes or None on failure.
 """
 
+import asyncio
 import io
 import logging
 import struct
@@ -14,11 +15,11 @@ from pathlib import Path
 from google import genai
 from google.genai import types
 
-from config import GCP_PROJECT, GCP_LOCATION
+from config import GCP_PROJECT, GCP_LOCATION, LIVE_API_VOICE, NARRATOR_VOICE
 
 logger = logging.getLogger("brand-agent")
 
-# Voice map — mood → voice name
+# Voice map — mood → voice name (used for single-voice fallback)
 VOICE_MAP: dict[str, str] = {
     "luxury": "Kore",
     "modern": "Puck",
@@ -30,6 +31,7 @@ VOICE_MAP: dict[str, str] = {
 
 DEFAULT_VOICE = "Kore"
 TTS_MODEL = "gemini-2.5-flash-preview-tts"
+TTS_TIMEOUT = 15  # seconds per TTS call
 
 # Gemini TTS returns raw PCM: 24kHz, 16-bit, mono (little-endian).
 _PCM_SAMPLE_RATE = 24000
@@ -82,28 +84,27 @@ def _wrap_pcm_as_wav(pcm_data: bytes) -> bytes:
     return buf.getvalue()
 
 
-async def generate_voiceover(
+async def _tts_generate(
     session_id: str,
     text: str,
-    mood: str = "",
+    voice: str,
+    label: str,
 ) -> bytes | None:
-    """Generate a voiceover WAV from text using Gemini TTS.
+    """Generate TTS audio for a single text+voice pair.
 
-    Returns WAV bytes on success, None on failure.
+    Returns WAV bytes on success, None on failure. Has 15s timeout.
     """
     if not text or not text.strip():
         logger.warning(
-            f"[{session_id}] Phase: GENERATING | Action: voiceover_empty_text | "
+            f"[{session_id}] Phase: GENERATING | Action: {label}_empty_text | "
             f"Skipping TTS — no text provided"
         )
         return None
 
-    voice = _pick_voice(mood)
     t0 = time.perf_counter()
-
     logger.info(
-        f"[{session_id}] Phase: GENERATING | Action: voiceover_starting | "
-        f"Voice: {voice} | Mood: {mood} | Text length: {len(text)}"
+        f"[{session_id}] Phase: GENERATING | Action: {label}_starting | "
+        f"Voice: {voice} | Text length: {len(text)}"
     )
 
     try:
@@ -114,19 +115,22 @@ async def generate_voiceover(
             http_options=types.HttpOptions(api_version="v1beta1"),
         )
 
-        response = await client.aio.models.generate_content(
-            model=TTS_MODEL,
-            contents=text,
-            config=types.GenerateContentConfig(
-                response_modalities=["AUDIO"],
-                speech_config=types.SpeechConfig(
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                            voice_name=voice,
+        response = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model=TTS_MODEL,
+                contents=text,
+                config=types.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                voice_name=voice,
+                            ),
                         ),
                     ),
                 ),
             ),
+            timeout=TTS_TIMEOUT,
         )
 
         # Extract audio data from response
@@ -138,27 +142,93 @@ async def generate_voiceover(
             for part in response.candidates[0].content.parts:
                 if part.inline_data and part.inline_data.mime_type.startswith("audio/"):
                     raw_pcm = part.inline_data.data
-                    # Gemini TTS returns raw PCM — wrap in WAV header
-                    # so browsers can play it natively.
                     wav_bytes = _wrap_pcm_as_wav(raw_pcm)
                     latency = (time.perf_counter() - t0) * 1000
                     logger.info(
-                        f"[{session_id}] Phase: GENERATING | Action: voiceover_success | "
+                        f"[{session_id}] Phase: GENERATING | Action: {label}_success | "
                         f"Voice: {voice} | PCM: {len(raw_pcm)} bytes | "
                         f"WAV: {len(wav_bytes)} bytes | Latency: {latency:.0f}ms"
                     )
                     return wav_bytes
 
         logger.warning(
-            f"[{session_id}] Phase: GENERATING | Action: voiceover_no_audio | "
+            f"[{session_id}] Phase: GENERATING | Action: {label}_no_audio | "
             f"Response had no audio parts"
         )
         return None
 
+    except asyncio.TimeoutError:
+        latency = (time.perf_counter() - t0) * 1000
+        logger.error(
+            f"[{session_id}] Phase: GENERATING | Action: {label}_timeout | "
+            f"Voice: {voice} | Timeout: {TTS_TIMEOUT}s | Latency: {latency:.0f}ms"
+        )
+        return None
     except Exception as e:
         latency = (time.perf_counter() - t0) * 1000
         logger.error(
-            f"[{session_id}] Phase: GENERATING | Action: voiceover_failed | "
+            f"[{session_id}] Phase: GENERATING | Action: {label}_failed | "
             f"Voice: {voice} | Error: {e} | Latency: {latency:.0f}ms"
         )
         return None
+
+
+async def generate_voiceover(
+    session_id: str,
+    text: str,
+    mood: str = "",
+) -> bytes | None:
+    """Generate a single voiceover WAV from text using Gemini TTS.
+
+    Legacy interface — picks voice by mood. Used by background pre-generation.
+    Returns WAV bytes on success, None on failure.
+    """
+    voice = _pick_voice(mood)
+    return await _tts_generate(session_id, text, voice, "voiceover")
+
+
+async def generate_dual_voiceover(
+    session_id: str,
+    handoff_text: str,
+    narration_text: str,
+    mood: str = "",
+) -> tuple[bytes | None, bytes | None]:
+    """Generate dual-voice voiceover: Charon handoff + Kore/Anna narration.
+
+    Returns (handoff_wav, story_wav). Either may be None on failure.
+    Error handling per spec:
+    - If handoff fails: returns (None, story_wav) — skip handoff, play story
+    - If story fails: returns (None, None) — skip both
+    - If both fail: returns (None, None)
+    """
+    handoff_voice = LIVE_API_VOICE  # Charon
+    narrator_voice = NARRATOR_VOICE  # Kore (Anna)
+
+    logger.info(
+        f"[{session_id}] Phase: GENERATING | Action: dual_voiceover_starting | "
+        f"Handoff voice: {handoff_voice} | Narrator voice: {narrator_voice} | "
+        f"Mood: {mood} | Handoff length: {len(handoff_text or '')} | "
+        f"Narration length: {len(narration_text or '')}"
+    )
+
+    # Generate both in parallel for speed
+    handoff_wav, story_wav = await asyncio.gather(
+        _tts_generate(session_id, handoff_text, handoff_voice, "voiceover_handoff"),
+        _tts_generate(session_id, narration_text, narrator_voice, "voiceover_story"),
+    )
+
+    # Per spec: if story fails, skip both (story is the deliverable)
+    if not story_wav:
+        logger.warning(
+            f"[{session_id}] Phase: GENERATING | Action: dual_voiceover_story_failed | "
+            f"Skipping both voiceover files"
+        )
+        return None, None
+
+    if not handoff_wav:
+        logger.warning(
+            f"[{session_id}] Phase: GENERATING | Action: dual_voiceover_handoff_failed | "
+            f"Skipping handoff, story narration will play directly"
+        )
+
+    return handoff_wav, story_wav

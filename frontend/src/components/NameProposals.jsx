@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { raw, fonts, easeCurve } from '../styles/tokens';
 
-export default function NameProposals({ names = [], autoSelectSeconds = 10, onSelect }) {
+export default function NameProposals({ names = [], autoSelectSeconds = 8, onSelect, narrationDone = false }) {
   const [selected, setSelected] = useState(null);
   const [countdown, setCountdown] = useState(autoSelectSeconds);
   const [hoveredIdx, setHoveredIdx] = useState(null);
@@ -19,8 +19,11 @@ export default function NameProposals({ names = [], autoSelectSeconds = 10, onSe
     if (onSelect) onSelect(name.name);
   }, [selected, onSelect]);
 
+  // Countdown only starts AFTER agent finishes narrating all names
   useEffect(() => {
-    if (selected || names.length === 0) return;
+    if (selected || names.length === 0 || !narrationDone) return;
+    // Reset countdown when narration finishes
+    setCountdown(autoSelectSeconds);
     timerRef.current = setInterval(() => {
       setCountdown(prev => {
         if (prev <= 1) {
@@ -38,7 +41,7 @@ export default function NameProposals({ names = [], autoSelectSeconds = 10, onSe
       });
     }, 1000);
     return () => clearInterval(timerRef.current);
-  }, [names, selected, recommended, onSelect]);
+  }, [names, selected, recommended, onSelect, narrationDone, autoSelectSeconds]);
 
   return (
     <motion.div
@@ -154,7 +157,7 @@ export default function NameProposals({ names = [], autoSelectSeconds = 10, onSe
 
       {/* Countdown — RED italic */}
       <AnimatePresence>
-        {!selected && countdown > 0 && (
+        {!selected && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -164,7 +167,9 @@ export default function NameProposals({ names = [], autoSelectSeconds = 10, onSe
               marginTop: 12, fontStyle: 'italic', fontWeight: 600,
             }}
           >
-            Pick your favorite — or I'll go with my recommendation in {countdown}s
+            {narrationDone
+              ? `Pick your favorite — or I'll go with my recommendation in ${countdown}s`
+              : 'Click any name to choose — or wait for my recommendation'}
           </motion.div>
         )}
       </AnimatePresence>

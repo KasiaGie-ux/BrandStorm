@@ -10,7 +10,7 @@ from pathlib import Path
 from google import genai
 from google.genai import types
 
-from config import GCP_LOCATION, GCP_PROJECT, LIVE_API_MODEL
+from config import GCP_LOCATION, GCP_PROJECT, LIVE_API_MODEL, LIVE_API_VOICE
 from prompts.system import SYSTEM_PROMPT
 
 logger = logging.getLogger("brand-agent")
@@ -21,15 +21,108 @@ logger = logging.getLogger("brand-agent")
 # ---------------------------------------------------------------------------
 TOOL_DECLARATIONS = types.Tool(
     function_declarations=[
-        # NOTE: analyze_product removed — agent analyzes via vision directly.
-        # The spike proved this works. The tool was causing the agent to stall
-        # because the response had no useful data (agent already sees the image).
+        # ── Structured data tools (SILENT — data via JSON, agent speaks naturally) ──
+        types.FunctionDeclaration(
+            name="propose_names",
+            description=(
+                "Present 3 brand name proposals to the user. "
+                "Call this INSTEAD of speaking the names out loud. "
+                "The UI renders beautiful name cards automatically. "
+                "Speak ONLY a short intro like 'Here are three names' "
+                "BEFORE calling this tool. Do NOT list names in speech."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "names": types.Schema(
+                        type=types.Type.ARRAY,
+                        description="Exactly 3 name proposals.",
+                        items=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "name": types.Schema(type=types.Type.STRING),
+                                "rationale": types.Schema(type=types.Type.STRING),
+                                "recommended": types.Schema(type=types.Type.BOOLEAN),
+                            },
+                            required=["name", "rationale"],
+                        ),
+                    ),
+                },
+                required=["names"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="reveal_brand_identity",
+            description=(
+                "Reveal the full brand identity after user picks a name. "
+                "Pass all brand data as structured JSON — do NOT speak "
+                "the tagline, story, values, or tone rules out loud. "
+                "The UI renders each element as beautiful cards. "
+                "Speak ONLY a brief intro like 'Here is your brand identity' "
+                "BEFORE calling this tool."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "brand_name": types.Schema(type=types.Type.STRING),
+                    "tagline": types.Schema(type=types.Type.STRING),
+                    "brand_story": types.Schema(type=types.Type.STRING),
+                    "brand_values": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                    ),
+                    "tone_of_voice_do": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                    ),
+                    "tone_of_voice_dont": types.Schema(
+                        type=types.Type.ARRAY,
+                        items=types.Schema(type=types.Type.STRING),
+                    ),
+                },
+                required=["brand_name", "tagline", "brand_story", "brand_values"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="suggest_fonts",
+            description=(
+                "Suggest a font pairing for the brand. "
+                "Call this AFTER the palette. The UI renders a typography "
+                "preview. Speak ONLY a brief intro BEFORE calling."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "heading_font": types.Schema(
+                        type=types.Type.STRING,
+                        description="Google Fonts family name for headings.",
+                    ),
+                    "heading_style": types.Schema(
+                        type=types.Type.STRING,
+                        description="Brief style (e.g. 'serif, elegant').",
+                    ),
+                    "body_font": types.Schema(
+                        type=types.Type.STRING,
+                        description="Google Fonts family name for body text.",
+                    ),
+                    "body_style": types.Schema(
+                        type=types.Type.STRING,
+                        description="Brief style (e.g. 'clean, modern').",
+                    ),
+                    "rationale": types.Schema(
+                        type=types.Type.STRING,
+                        description="Why this pairing works.",
+                    ),
+                },
+                required=["heading_font", "body_font"],
+            ),
+        ),
+        # ── Generation tools ──
         types.FunctionDeclaration(
             name="generate_image",
             description=(
-                "Generate a brand asset image. Use this when you are ready "
-                "to create a visual asset for the brand kit. Always narrate "
-                "your creative reasoning BEFORE calling this tool."
+                "Generate a brand asset image. Speak ONE evocative sentence "
+                "BEFORE calling. Do NOT say the tool name or parameters."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -37,26 +130,13 @@ TOOL_DECLARATIONS = types.Tool(
                     "asset_type": types.Schema(
                         type=types.Type.STRING,
                         enum=["logo", "hero_lifestyle", "instagram_post", "packaging"],
-                        description="Type of brand asset to generate.",
                     ),
-                    "prompt": types.Schema(
-                        type=types.Type.STRING,
-                        description=(
-                            "Detailed image generation prompt. Must reference "
-                            "the product, brand name, style anchor, and color palette."
-                        ),
-                    ),
+                    "prompt": types.Schema(type=types.Type.STRING),
                     "aspect_ratio": types.Schema(
                         type=types.Type.STRING,
                         enum=["1:1", "4:5", "16:9"],
-                        description="Image aspect ratio. Use 4:5 for Instagram.",
                     ),
-                    "style_anchor": types.Schema(
-                        type=types.Type.STRING,
-                        description=(
-                            "Visual style: luxury, energetic, eco, modern, gentle, edgy"
-                        ),
-                    ),
+                    "style_anchor": types.Schema(type=types.Type.STRING),
                 },
                 required=["asset_type", "prompt", "style_anchor"],
             ),
@@ -64,45 +144,29 @@ TOOL_DECLARATIONS = types.Tool(
         types.FunctionDeclaration(
             name="generate_palette",
             description=(
-                "Generate a 5-color brand palette based on product analysis "
-                "and brand direction. You MUST provide the colors array with "
-                "hex values, roles, and names."
+                "Generate a 5-color brand palette. You MUST provide "
+                "the colors array with hex, role, and name."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
-                    "mood": types.Schema(
-                        type=types.Type.STRING,
-                        description="Overall mood for the palette.",
-                    ),
+                    "mood": types.Schema(type=types.Type.STRING),
                     "product_colors": types.Schema(
                         type=types.Type.ARRAY,
                         items=types.Schema(type=types.Type.STRING),
-                        description="Dominant colors observed in the product photo.",
                     ),
-                    "style_anchor": types.Schema(
-                        type=types.Type.STRING,
-                        description="Visual style anchor.",
-                    ),
+                    "style_anchor": types.Schema(type=types.Type.STRING),
                     "colors": types.Schema(
                         type=types.Type.ARRAY,
-                        description="The 5 brand colors with hex, role, and name.",
                         items=types.Schema(
                             type=types.Type.OBJECT,
                             properties={
-                                "hex": types.Schema(
-                                    type=types.Type.STRING,
-                                    description="Hex color code e.g. #1a1a2e",
-                                ),
+                                "hex": types.Schema(type=types.Type.STRING),
                                 "role": types.Schema(
                                     type=types.Type.STRING,
                                     enum=["primary", "secondary", "accent", "neutral", "background"],
-                                    description="Color role in the palette.",
                                 ),
-                                "name": types.Schema(
-                                    type=types.Type.STRING,
-                                    description="Creative color name e.g. Deep Ink",
-                                ),
+                                "name": types.Schema(type=types.Type.STRING),
                             },
                             required=["hex", "role", "name"],
                         ),
@@ -114,8 +178,8 @@ TOOL_DECLARATIONS = types.Tool(
         types.FunctionDeclaration(
             name="finalize_brand_kit",
             description=(
-                "Package all generated assets into a downloadable ZIP. "
-                "Call this only after all visual assets are complete."
+                "Package all assets into a downloadable ZIP. "
+                "Call only after all visual assets are complete."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
@@ -148,24 +212,20 @@ TOOL_DECLARATIONS = types.Tool(
         types.FunctionDeclaration(
             name="generate_voiceover",
             description=(
-                "Record the brand story as a professional voiceover. "
-                "Pick a voice that matches the brand mood. Call this "
-                "after generating visual assets but before finalize_brand_kit."
+                "Generate brand story voiceover with two voices. "
+                "Call after visual assets, before finalize."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
-                    "text": types.Schema(
-                        type=types.Type.STRING,
-                        description="Brand story text to narrate.",
-                    ),
+                    "handoff_text": types.Schema(type=types.Type.STRING),
+                    "narration_text": types.Schema(type=types.Type.STRING),
                     "mood": types.Schema(
                         type=types.Type.STRING,
                         enum=["luxury", "modern", "eco", "energetic", "gentle", "edgy"],
-                        description="The brand mood — determines voice selection.",
                     ),
                 },
-                required=["text", "mood"],
+                required=["handoff_text", "narration_text", "mood"],
             ),
         ),
     ]
@@ -195,18 +255,14 @@ def build_live_config() -> types.LiveConnectConfig:
         f"Building LiveConnectConfig | Tools registered: {len(tool_names)} | "
         f"Names: {tool_names}"
     )
-    # gemini-2.0-flash-live supports TEXT+AUDIO with function calling.
-    # Native-audio models use AUDIO only but have weak function calling.
-    is_native_audio = "native-audio" in LIVE_API_MODEL
-    if is_native_audio:
-        logger.info("Using AUDIO-only modality (native-audio model)")
-        modalities = [types.Modality.AUDIO]
-    else:
-        logger.info("Using TEXT modality (standard Live API — reliable tool calling)")
-        modalities = [types.Modality.TEXT]
+    # Live API only supports ONE response modality at a time.
+    # Use AUDIO so the agent speaks, plus output_audio_transcription
+    # so we get text transcripts for structured event parsing.
+    logger.info("Using AUDIO modality + transcription")
+    modalities = [types.Modality.AUDIO]
 
     logger.info(
-        f"Model: {LIVE_API_MODEL} | Modalities: {modalities}"
+        f"Model: {LIVE_API_MODEL} | Modalities: {modalities} | Voice: {LIVE_API_VOICE}"
     )
 
     config = types.LiveConnectConfig(
@@ -215,10 +271,15 @@ def build_live_config() -> types.LiveConnectConfig:
         system_instruction=types.Content(
             parts=[types.Part.from_text(text=SYSTEM_PROMPT)]
         ),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name=LIVE_API_VOICE,
+                )
+            )
+        ),
     )
-    # Audio transcription only needed for native-audio models
-    if is_native_audio:
-        config.output_audio_transcription = types.AudioTranscriptionConfig()
 
     return config
 
