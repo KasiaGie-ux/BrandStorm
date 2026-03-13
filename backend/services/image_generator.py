@@ -18,6 +18,7 @@ import config
 from config import (
     IMAGE_MODEL, IMAGE_MODEL_FALLBACK, IMAGE_MODEL_FALLBACK_2,
     GEMINI_API_KEY, USE_DEVELOPER_API_FALLBACK, DEVELOPER_API_IMAGE_MODEL,
+    DEBUG_API_KEY_ONLY,
 )
 
 logger = logging.getLogger("brand-agent")
@@ -213,6 +214,41 @@ class ImageGenerator:
             )
         else:
             contents = full_prompt
+
+        # ------------------------------------------------------------------
+        # Debug mode: skip Vertex AI, go straight to Developer API
+        # ------------------------------------------------------------------
+        if DEBUG_API_KEY_ONLY and GEMINI_API_KEY:
+            dev_client = _get_dev_client()
+            if dev_client:
+                # Try primary model via API key
+                result = await self._try_model(
+                    session_id, dev_client,
+                    DEVELOPER_API_IMAGE_MODEL, "Nano Banana Pro (debug/api-key)", "developer-api",
+                    contents, asset_type, brand_name,
+                    max_attempts=1 + MAX_RETRIES_429,
+                )
+                if result:
+                    return result
+                # Try fallback models via API key
+                for fb_model, fb_label in [
+                    (IMAGE_MODEL_FALLBACK,   "Nano Banana (debug/api-key)"),
+                    (IMAGE_MODEL_FALLBACK_2, "Flash Image Gen (debug/api-key)"),
+                ]:
+                    result = await self._try_model(
+                        session_id, dev_client,
+                        fb_model, fb_label, "developer-api",
+                        contents, asset_type, brand_name,
+                        max_attempts=1 + MAX_RETRIES_429,
+                    )
+                    if result:
+                        return result
+
+                return {
+                    "status": "error",
+                    "asset_type": asset_type,
+                    "error": "All image generation models failed (debug/api-key mode).",
+                }
 
         # ------------------------------------------------------------------
         # Step 1: Vertex AI global — primary model, 1 attempt only

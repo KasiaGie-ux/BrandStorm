@@ -39,7 +39,7 @@ _VALUES_RE = re.compile(
 _HEX_RE = re.compile(r'(#[0-9a-fA-F]{3,6})\b')
 
 # Track already-emitted event types to deduplicate
-_DEDUP_TYPES = {"brand_name_reveal", "tagline_reveal", "brand_story", "brand_values", "tone_of_voice"}
+_DEDUP_TYPES = {"brand_name_reveal", "tagline_reveal", "brand_story", "brand_values", "tone_of_voice", "palette_reveal", "font_suggestion"}
 
 
 def parse_agent_text(

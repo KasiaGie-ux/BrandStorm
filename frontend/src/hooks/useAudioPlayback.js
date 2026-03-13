@@ -40,7 +40,7 @@ export default function useAudioPlayback() {
       analyserRef.current = analyser;
       return ctx;
     } catch (e) {
-      console.error('AudioContext creation failed:', e);
+      // AudioContext creation failed — silently return null
       return null;
     }
   }, []);
@@ -75,7 +75,7 @@ export default function useAudioPlayback() {
   }, []);
 
   /** Play the next chunk in the queue. */
-  const playNext = useCallback(() => {
+  const playNext = useCallback(function play() {
     if (queueRef.current.length === 0) {
       playingRef.current = false;
       currentSourceRef.current = null;
@@ -90,20 +90,20 @@ export default function useAudioPlayback() {
 
     // If muted, skip the chunk but keep draining the queue
     if (mutedRef.current) {
-      playNext();
+      play();
       return;
     }
 
     const buffer = decodeChunk(base64);
     if (!buffer) {
-      playNext();
+      play();
       return;
     }
 
     const ctx = ctxRef.current;
     const analyser = analyserRef.current;
     if (!ctx || !analyser) {
-      playNext();
+      play();
       return;
     }
 
@@ -113,14 +113,14 @@ export default function useAudioPlayback() {
       source.connect(analyser); // analyser is already connected to destination
       source.onended = () => {
         currentSourceRef.current = null;
-        playNext();
+        play();
       };
       currentSourceRef.current = source;
       source.start();
     } catch (e) {
-      console.error('Audio playback error:', e);
+      // Audio playback error — skip chunk
       currentSourceRef.current = null;
-      playNext();
+      play();
     }
   }, [decodeChunk]);
 
@@ -162,12 +162,19 @@ export default function useAudioPlayback() {
     }
   }, []);
 
+  /** Synchronous check — reads the ref, not the state.
+   *  Use this when you need the answer RIGHT NOW (e.g. in a WS message handler)
+   *  rather than after the next React render.
+   */
+  const getIsPlaying = useCallback(() => playingRef.current, []);
+
   return {
     queueChunk,
     flush,
     muted,
     setMuted,
     isPlaying,
+    getIsPlaying,
     analyser: analyserRef,
     ensureContext,
   };

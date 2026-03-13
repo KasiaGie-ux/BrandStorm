@@ -133,7 +133,7 @@ export default function useAudioInput({ onChunk, onSilenceTimeout }) {
       setIsRecording(true);
       resetSilenceTimer();
     } catch (e) {
-      console.error('Microphone access failed:', e);
+      // Microphone access failed — handle gracefully
       if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
         setPermissionDenied(true);
       }

@@ -28,7 +28,7 @@ VALID_TRANSITIONS: dict[AgentPhase, set[AgentPhase]] = {
     AgentPhase.AWAITING_INPUT: {AgentPhase.GENERATING, AgentPhase.PROPOSING},
     AgentPhase.GENERATING: {AgentPhase.REFINING, AgentPhase.COMPLETE, AgentPhase.AWAITING_INPUT},
     AgentPhase.REFINING: {AgentPhase.AWAITING_INPUT, AgentPhase.COMPLETE},
-    AgentPhase.COMPLETE: set(),
+    AgentPhase.COMPLETE: {AgentPhase.GENERATING, AgentPhase.REFINING, AgentPhase.AWAITING_INPUT},
 }
 
 
@@ -95,6 +95,23 @@ class Session:
     # Blocks auto-continue so agent asks user if they like the new version.
     # Cleared when user sends positive feedback or continues.
     awaiting_feedback: bool = False
+
+    # Set True when user gives feedback that requires a tool call (regen asset,
+    # change tagline, etc.). Blocks auto-continue until the agent actually
+    # executes the corrective tool call.  Cleared in agent_loop after tool exec.
+    pending_regen: bool = False
+
+    # Set True when generate_voiceover emits events. Blocks auto-continue
+    # (finalize nudge) until frontend signals voiceover playback is done.
+    voiceover_playing: bool = False
+
+    # Tracks WHAT the user wants changed so nudges can reference it.
+    # e.g. "tagline", "logo", "palette", "fonts", "hero", "instagram"
+    pending_regen_target: str | None = None
+
+    # Signaled by receive_loop when frontend reports audio playback finished.
+    # agent_loop waits on this before sending auto-continue nudges.
+    audio_done_event: Any = field(default=None, repr=False)
 
     @property
     def total_assets(self) -> int:

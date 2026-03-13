@@ -15,7 +15,7 @@ from models.session import Session
 from services.image_generator import ImageGenerator
 from services.pregen import PreGenerator
 from services.storage import StorageService
-from services.voiceover import generate_voiceover, _tts_generate
+from services.voiceover import _tts_generate
 
 logger = logging.getLogger("brand-agent")
 
@@ -244,11 +244,11 @@ class ToolExecutor:
                 "tone_of_voice": {"do": tone_do, "dont": tone_dont},
             })
 
-        # Emit all except the last via callback; return the last as the event
+        # Emit all except the last via callback; return the last as the event.
+        # No sleep here — delivery consumer handles stagger timing.
         if emit_cb and len(events) > 1:
             for ev in events[:-1]:
                 await emit_cb(ev)
-                await asyncio.sleep(1.0)
             last_event = events[-1]
         elif events:
             last_event = events[0]
@@ -314,7 +314,11 @@ class ToolExecutor:
         brand_name = args.get("brand_name", session.brand_name or "Brand")
 
         # --- Check pre-generated result first ---
-        if self._pregen:
+        # Skip pregen cache if this is a REGENERATION (asset already completed once).
+        # The agent is calling generate_image again because the user asked for changes,
+        # so we must honor the new prompt instead of returning the cached version.
+        is_regen = asset_type in session.completed_assets
+        if self._pregen and not is_regen:
             pregen_result = await self._pregen.get_image_result(session, asset_type)
             if pregen_result and pregen_result.get("status") == "success":
                 url = pregen_result.get("url")
@@ -335,6 +339,11 @@ class ToolExecutor:
                         "progress": session.progress,
                     }
                     return pregen_result, event
+        elif is_regen:
+            logger.info(
+                f"[{session.id}] Phase: GENERATING | Action: pregen_cache_skipped | "
+                f"Asset: {asset_type} | Reason: regeneration (user feedback)"
+            )
 
         # --- Validate & default: prompt ---
         prompt = args.get("prompt", "")
@@ -574,7 +583,10 @@ class ToolExecutor:
             )
             return {"status": "skipped", "reason": "No narration text provided"}, None
 
-        # Await background task if still running
+        import asyncio
+        from config import LIVE_API_VOICE, NARRATOR_VOICE
+
+        # Await background story TTS task if still running
         bg_task = session.pregen_tasks.get("voiceover")
         if bg_task and not bg_task.done():
             logger.info(
@@ -585,54 +597,72 @@ class ToolExecutor:
             except Exception:
                 pass
 
-        # Reuse cached story audio if background TTS already finished
-        cached_story_url = session.audio_url
+        # --- Generate handoff (Charon) + greeting (Anna) in parallel ---
+        # greeting_text is a dedicated parameter — agent explicitly separates
+        # Anna's intro from the brand story. No extraction needed.
+        greeting_text = args.get("greeting_text", "").strip()
+        logger.info(
+            f"[{session.id}] Phase: GENERATING | Action: voiceover_params | "
+            f"handoff={bool(handoff_text)} | greeting={bool(greeting_text)} | "
+            f"narration_len={len(narration_text)}"
+        )
 
+        async def _noop():
+            return None
+
+        # Handoff TTS is NOT generated — Charon already said the handoff line
+        # via Live API audio. Generating TTS would play it twice.
+        # We still emit the event so the text appears in chat.
         result = {"status": "success"}
-        last_event = None
 
-        # --- Generate & emit handoff (Charon's voice) ---
-        if handoff_text:
-            from config import LIVE_API_VOICE
-            handoff_wav = await _tts_generate(
+        if handoff_text and emit_cb:
+            await emit_cb({
+                "type": "voiceover_handoff",
+                "audio_url": None,
+                "text": handoff_text,
+            })
+
+        # Greeting (Anna's voice only)
+        greeting_wav = None
+        if greeting_text:
+            greeting_wav = await _tts_generate(
                 session_id=session.id,
-                text=handoff_text,
-                voice=LIVE_API_VOICE,
-                label="voiceover_handoff",
+                text=greeting_text,
+                voice=NARRATOR_VOICE,
+                label="voiceover_greeting",
             )
-            if handoff_wav:
-                handoff_url = await self._storage.upload_image(
-                    session_id=session.id,
-                    asset_type="voiceover_handoff",
-                    image_bytes=handoff_wav,
-                    mime_type="audio/wav",
-                )
-                logger.info(
-                    f"[{session.id}] Phase: GENERATING | Action: voiceover_handoff_stored | "
-                    f"URL: {handoff_url} | Size: {len(handoff_wav)} bytes"
-                )
-                result["handoff_url"] = handoff_url
-                handoff_event = {
-                    "type": "voiceover_handoff",
-                    "audio_url": handoff_url,
-                    "text": handoff_text,
-                }
-                if emit_cb:
-                    await emit_cb(handoff_event)
 
-        # --- Story narration (Anna's voice) — reuse cached if available ---
-        if cached_story_url:
+        # --- Emit greeting (Anna's intro) ---
+        if greeting_wav:
+            greeting_url = await self._storage.upload_image(
+                session_id=session.id,
+                asset_type="voiceover_greeting",
+                image_bytes=greeting_wav,
+                mime_type="audio/wav",
+            )
+            logger.info(
+                f"[{session.id}] Phase: GENERATING | Action: voiceover_greeting_stored | "
+                f"URL: {greeting_url} | Size: {len(greeting_wav)} bytes"
+            )
+            if emit_cb:
+                await emit_cb({
+                    "type": "voiceover_greeting",
+                    "audio_url": greeting_url,
+                    "text": greeting_text,
+                })
+
+        # --- Story narration (Anna's voice) — use bg pre-gen cache ---
+        if session.audio_url:
+            story_url = session.audio_url
             logger.info(
                 f"[{session.id}] Phase: GENERATING | Action: voiceover_story_cached | "
-                f"URL: {cached_story_url}"
+                f"URL: {story_url}"
             )
-            story_url = cached_story_url
         else:
-            # Generate story narration fresh
-            from config import NARRATOR_VOICE
+            # Fallback: generate story fresh
             story_wav = await _tts_generate(
                 session_id=session.id,
-                text=narration_text,
+                text=story_text or narration_text,
                 voice=NARRATOR_VOICE,
                 label="voiceover_story",
             )

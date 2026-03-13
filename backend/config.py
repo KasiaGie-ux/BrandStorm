@@ -39,6 +39,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 USE_DEVELOPER_API_FALLBACK = os.getenv("USE_DEVELOPER_API_FALLBACK", "true").lower() == "true"
 DEVELOPER_API_IMAGE_MODEL = os.getenv("DEVELOPER_API_IMAGE_MODEL", "gemini-3-pro-image-preview")
 
+# Debug mode: skip Vertex AI entirely for images, go straight to Developer API (api_key).
+# Set DEBUG_API_KEY_ONLY=true in .env when running locally without ADC credentials.
+DEBUG_API_KEY_ONLY = os.getenv("DEBUG_API_KEY_ONLY", "false").lower() == "true"
+
 # Server
 PORT = int(os.getenv("PORT", "8080"))
 HOST = os.getenv("HOST", "0.0.0.0")

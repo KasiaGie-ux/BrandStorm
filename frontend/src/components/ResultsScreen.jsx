@@ -400,7 +400,7 @@ export default function ResultsScreen({ brandKit, sessionId, onReset }) {
   const palette = brandKit.palette || [];
   const fontSuggestion = brandKit.font_suggestion || {};
   const headingFont = fontSuggestion.heading?.family || fontSuggestion.heading || 'Playfair Display';
-  const bodyFont = fontSuggestion.body?.family || fontSuggestion.body || 'Inter';
+  const bodyFont = fontSuggestion.body?.family || fontSuggestion.body || 'Syne';
   const images = brandKit.images || [];
   const toneOfVoice = brandKit.tone_of_voice || brandKit.tone || {};
   const audioUrl = brandKit.audio_url || null;

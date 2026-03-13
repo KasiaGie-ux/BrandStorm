@@ -13,7 +13,7 @@ const DISPLAY_TYPES = [
   'name_proposals',
   'image_generated', 'tool_invoked', 'generation_complete',
   'palette_reveal', 'palette_ready', 'font_suggestion',
-  'voiceover_handoff', 'voiceover_story',
+  'voiceover_handoff', 'voiceover_greeting', 'voiceover_story',
 ];
 
 export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, imagePreview, onVoiceoverEnd, audioPlayback }) {
@@ -92,14 +92,17 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
     generate_voiceover: 'voiceover_story',
   };
   // Build ranges where agent_text should be hidden
-  // (narration between each name_proposals and the next brand_name_reveal)
+  // (narration between name_proposals and user's choice — NOT after the user picks)
   const hideRanges = [];
   let lastProposalIdx = -1;
   for (let i = 0; i < messages.length; i++) {
     if (messages[i].type === 'name_proposals') {
-      // Close any unclosed range
       if (lastProposalIdx !== -1) hideRanges.push([lastProposalIdx, i]);
       lastProposalIdx = i;
+    } else if (messages[i].type === 'user' && lastProposalIdx !== -1) {
+      // User picked a name — stop hiding. Narration AFTER this must be visible.
+      hideRanges.push([lastProposalIdx, i]);
+      lastProposalIdx = -1;
     } else if (messages[i].type === 'brand_name_reveal' && lastProposalIdx !== -1) {
       hideRanges.push([lastProposalIdx, i]);
       lastProposalIdx = -1;
@@ -132,7 +135,7 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
     // Hide tool_invoked spinner if a result for this tool exists later in messages
     if (m.type === 'tool_invoked' && m.tool) {
       // These tools are instant or background — never show their spinner
-      if (['generate_voiceover', 'propose_names', 'reveal_brand_identity', 'suggest_fonts'].includes(m.tool)) return false;
+      if (['generate_palette', 'generate_voiceover', 'propose_names', 'reveal_brand_identity', 'suggest_fonts'].includes(m.tool)) return false;
       const resultType = TOOL_RESULT_MAP[m.tool];
       if (resultType) {
         const hasResult = messages.slice(i + 1).some(later => later.type === resultType);
@@ -141,6 +144,10 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
     }
     // Hide agent_text inside any name narration range
     if (m.type === 'agent_text' && hideRanges.some(([start, end]) => i > start && i < end)) {
+      return false;
+    }
+    // Hide agent_text right before voiceover_handoff (it's the same spoken text)
+    if (m.type === 'agent_text' && messages.slice(i + 1, i + 4).some(later => later.type === 'voiceover_handoff')) {
       return false;
     }
     // After a name change, hide stale structured events from the previous brand

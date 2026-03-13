@@ -218,14 +218,24 @@ TOOL_DECLARATIONS = types.Tool(
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
-                    "handoff_text": types.Schema(type=types.Type.STRING),
-                    "narration_text": types.Schema(type=types.Type.STRING),
+                    "handoff_text": types.Schema(
+                        type=types.Type.STRING,
+                        description="Charon's handoff line introducing Anna (1 sentence).",
+                    ),
+                    "greeting_text": types.Schema(
+                        type=types.Type.STRING,
+                        description="Anna's short greeting intro (1-2 sentences, e.g. 'Hi, I'm Anna. Let me tell you the story of...'). Separate from the brand story.",
+                    ),
+                    "narration_text": types.Schema(
+                        type=types.Type.STRING,
+                        description="Anna's full brand story narration (the story only, without the greeting).",
+                    ),
                     "mood": types.Schema(
                         type=types.Type.STRING,
                         enum=["luxury", "modern", "eco", "energetic", "gentle", "edgy"],
                     ),
                 },
-                required=["handoff_text", "narration_text", "mood"],
+                required=["handoff_text", "greeting_text", "narration_text", "mood"],
             ),
         ),
     ]

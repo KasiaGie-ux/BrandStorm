@@ -190,6 +190,14 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline, on
     return <ChatHandoffText text={msg.text} audioUrl={msg.audio_url} />;
   }
 
+  if (msg.type === 'voiceover_greeting') {
+    // "Hello, I'm Anna" lives only inside the audio — don't show text in chat.
+    // Still render the hidden audio element so it auto-plays before the story narration.
+    return msg.audio_url ? (
+      <HiddenAudio audioUrl={msg.audio_url} />
+    ) : null;
+  }
+
   if (msg.type === 'voiceover_story' && msg.audio_url) {
     return <ChatVoiceoverPlayer audioUrl={msg.audio_url} onEnded={onVoiceoverEnd} />;
   }
@@ -252,12 +260,50 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline, on
   return null;
 }
 
-function ChatHandoffText({ text, audioUrl }) {
+function HiddenAudio({ audioUrl }) {
   const audioRef = useRef(null);
 
   useEffect(() => {
     if (!audioRef.current || !audioUrl) return;
-    audioRef.current.play().catch(() => {});
+    const a = audioRef.current;
+    const onEnd = () => window.dispatchEvent(new CustomEvent('voiceover-greeting-ended'));
+    const onStop = () => { a.pause(); a.currentTime = 0; };
+    const startPlay = () => { a.play().catch(() => {}); };
+    a.addEventListener('ended', onEnd);
+    window.addEventListener('voiceover-stop', onStop);
+    // Wait for handoff audio to finish before playing greeting
+    window.addEventListener('voiceover-handoff-ended', startPlay);
+    // Fallback: auto-play after 2s if no handoff audio preceded this
+    const fallback = setTimeout(() => { if (a.paused) startPlay(); }, 2000);
+    return () => {
+      clearTimeout(fallback);
+      a.removeEventListener('ended', onEnd);
+      window.removeEventListener('voiceover-stop', onStop);
+      window.removeEventListener('voiceover-handoff-ended', startPlay);
+    };
+  }, [audioUrl]);
+
+  return <audio ref={audioRef} src={audioUrl} preload="auto" style={{ display: 'none' }} />;
+}
+
+function ChatHandoffText({ text, audioUrl }) {
+  const audioRef = useRef(null);
+
+  useEffect(() => {
+    if (!audioUrl) {
+      // No handoff TTS — agent already said this via Live API.
+      // Signal immediately so Anna's greeting can start.
+      window.dispatchEvent(new CustomEvent('voiceover-handoff-ended'));
+      return;
+    }
+    const a = audioRef.current;
+    if (!a) return;
+    const onEnd = () => window.dispatchEvent(new CustomEvent('voiceover-handoff-ended'));
+    const onStop = () => { a.pause(); a.currentTime = 0; };
+    a.addEventListener('ended', onEnd);
+    window.addEventListener('voiceover-stop', onStop);
+    a.play().catch(() => {});
+    return () => { a.removeEventListener('ended', onEnd); window.removeEventListener('voiceover-stop', onStop); };
   }, [audioUrl]);
 
   return (
@@ -266,8 +312,8 @@ function ChatHandoffText({ text, audioUrl }) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: easeCurve }}
       style={{
-        fontSize: 13, color: raw.muted, fontFamily: fonts.body,
-        fontStyle: 'italic', padding: '4px 0',
+        fontSize: 15, lineHeight: 1.65, color: raw.ink,
+        fontFamily: fonts.body, padding: '4px 0',
       }}
     >
       {audioUrl && <audio ref={audioRef} src={audioUrl} preload="auto" />}
@@ -300,11 +346,32 @@ function ChatVoiceoverPlayer({ audioUrl, onEnded }) {
     a.addEventListener('timeupdate', onTime);
     a.addEventListener('loadedmetadata', onMeta);
     a.addEventListener('ended', onEnd);
-    // Autoplay with slight delay (allows handoff audio to finish first)
-    const timer = setTimeout(() => {
+    // Listen for greeting audio to finish, then autoplay story
+    const startPlay = () => {
       a.play().then(() => setPlaying(true)).catch(() => {});
-    }, 500);
-    return () => { clearTimeout(timer); a.removeEventListener('timeupdate', onTime); a.removeEventListener('loadedmetadata', onMeta); a.removeEventListener('ended', onEnd); };
+    };
+    window.addEventListener('voiceover-greeting-ended', startPlay);
+    // Secondary fallback: if no greeting exists, start after handoff ends
+    const startFromHandoff = () => {
+      setTimeout(() => { if (a.paused) startPlay(); }, 500);
+    };
+    window.addEventListener('voiceover-handoff-ended', startFromHandoff);
+    // Stop playback when user sends a message (barge-in)
+    const onStop = () => { a.pause(); a.currentTime = 0; setPlaying(false); setProgress(0); setCurrent(0); };
+    window.addEventListener('voiceover-stop', onStop);
+    // If no preceding audio exists, autoplay after a longer delay
+    const fallbackTimer = setTimeout(() => {
+      if (!playing && a.paused) startPlay();
+    }, 8000);
+    return () => {
+      clearTimeout(fallbackTimer);
+      window.removeEventListener('voiceover-stop', onStop);
+      window.removeEventListener('voiceover-greeting-ended', startPlay);
+      window.removeEventListener('voiceover-handoff-ended', startFromHandoff);
+      a.removeEventListener('timeupdate', onTime);
+      a.removeEventListener('loadedmetadata', onMeta);
+      a.removeEventListener('ended', onEnd);
+    };
   }, []);
 
   const bars = Array.from({ length: 40 }, (_, i) => ({
