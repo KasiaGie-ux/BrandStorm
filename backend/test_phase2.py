@@ -95,6 +95,13 @@ async def run_test(image_path: str):
     tools_invoked: list[str] = []
     complete = False
     followup_sent = False
+    # helpers for checking structured-event spacing
+    last_structured_ts: float | None = None
+    STRUCTURED_TYPES = {
+        "brand_name_reveal", "tagline_reveal", "brand_values",
+        "brand_story", "palette_reveal", "font_suggestion",
+    }
+    MIN_EVENT_GAP = 0.2  # seconds; backend staggers by ~0.35s
 
     try:
         async with websockets.connect(WS_URL, max_size=50 * 1024 * 1024) as ws:
@@ -163,6 +170,16 @@ async def run_test(image_path: str):
                                 for k, v in args.items():
                                     val = str(v)[:80]
                                     print(f"         {k}: {val}")
+                        # check spacing of structured events to catch regressions
+                        if event_type in STRUCTURED_TYPES:
+                            now = events[-1]["ts"]
+                            if last_structured_ts is not None:
+                                gap = now - last_structured_ts
+                                if gap < MIN_EVENT_GAP:
+                                    print(
+                                        f"[WARNING] structured events too close: {gap:.2f}s"
+                                    )
+                            last_structured_ts = now
 
                         elif event_type == "image_generated":
                             asset = event.get("asset_type", "?")

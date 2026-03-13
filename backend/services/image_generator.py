@@ -32,6 +32,7 @@ ASPECT_RATIOS: dict[str, str] = {
 
 MAX_RETRIES_429 = 3
 BACKOFF_SECS = [1, 2, 4]  # backoff per retry attempt
+REQUEST_TIMEOUT_SEC = 60   # per-call timeout — prevents hanging requests from blocking the chain
 
 # gemini-3-pro-image-preview requires the GLOBAL endpoint (not us-central1)
 _global_client: genai.Client | None = None
@@ -63,16 +64,13 @@ def _get_dev_client() -> genai.Client | None:
     return _dev_client
 
 
+# ---------------------------------------------------------------------------
 # Generation chain — ordered priority:
-# 1. Vertex AI global — primary model, 1 attempt only
-# 2. Developer API — primary model, up to MAX_RETRIES_429 retries on 429
-# 3. Vertex AI us-central1 — fallback models
-_CHAIN_VERTEX_PRIMARY = ("vertex_global", IMAGE_MODEL, "Nano Banana Pro")
-_CHAIN_DEV_PRIMARY = ("dev_api", DEVELOPER_API_IMAGE_MODEL, "GenAI Nano Banana Pro")
-_CHAIN_VERTEX_FALLBACKS = [
-    ("vertex", IMAGE_MODEL_FALLBACK, "Nano Banana (fallback)"),
-    ("vertex", IMAGE_MODEL_FALLBACK_2, "Flash Image Gen (fallback 2)"),
-]
+#   Step 1: Vertex AI global — primary model (1 attempt, no retry)
+#   Step 2: Developer API (api_key) — same primary model (up to MAX_RETRIES_429)
+#   Step 3: Vertex AI fallback models (up to MAX_RETRIES_429 each)
+# Worst case: 1 + 4 + 4 + 4 = 13 attempts  (was 20 before)
+# ---------------------------------------------------------------------------
 
 
 class ImageGenerator:
@@ -80,6 +78,107 @@ class ImageGenerator:
 
     def __init__(self, client: genai.Client) -> None:
         self._client = client  # us-central1 client for fallback models
+
+    # ----- internal: single-model attempt runner -----
+
+    async def _try_model(
+        self,
+        session_id: str,
+        client: genai.Client,
+        model_name: str,
+        label: str,
+        endpoint_tag: str,
+        contents,
+        asset_type: str,
+        brand_name: str,
+        max_attempts: int,
+    ) -> dict | None:
+        """Try *one* model up to `max_attempts` times (retrying only on 429).
+
+        Returns a success dict or ``None`` if this model should be skipped.
+        """
+        for attempt in range(max_attempts):
+            t0 = time.perf_counter()
+            try:
+                logger.info(
+                    f"[{session_id}] Phase: GENERATING | Action: image_gen_start | "
+                    f"Model: {label} ({model_name}) | Asset: {asset_type} | "
+                    f"Attempt: {attempt + 1}/{max_attempts} | Endpoint: {endpoint_tag}"
+                )
+                response = await asyncio.wait_for(
+                    client.aio.models.generate_content(
+                        model=model_name,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            response_modalities=["TEXT", "IMAGE"],
+                        ),
+                    ),
+                    timeout=REQUEST_TIMEOUT_SEC,
+                )
+                latency = (time.perf_counter() - t0) * 1000
+
+                if not response.candidates or not response.candidates[0].content.parts:
+                    logger.warning(
+                        f"[{session_id}] Phase: GENERATING | Action: empty_response | "
+                        f"Model: {label} | Latency: {latency:.0f}ms"
+                    )
+                    return None  # empty → next step in chain
+
+                image_data, text_desc = self._extract_parts(response)
+                if image_data is None:
+                    logger.warning(
+                        f"[{session_id}] Phase: GENERATING | Action: no_image_in_response | "
+                        f"Model: {label} | Latency: {latency:.0f}ms"
+                    )
+                    return None
+
+                logger.info(
+                    f"[{session_id}] Phase: GENERATING | Action: image_generated | "
+                    f"Model: {label} | Asset: {asset_type} | Latency: {latency:.0f}ms | "
+                    f"Size: {len(image_data.data) / 1024:.0f}KB"
+                )
+                return {
+                    "status": "success",
+                    "asset_type": asset_type,
+                    "brand_name": brand_name,
+                    "model_used": model_name,
+                    "latency_ms": round(latency),
+                    "image_size_bytes": len(image_data.data),
+                    "image_bytes": image_data.data,
+                    "mime_type": image_data.mime_type,
+                    "description": text_desc or "Image generated successfully.",
+                }
+
+            except TimeoutError:
+                latency = (time.perf_counter() - t0) * 1000
+                logger.error(
+                    f"[{session_id}] Phase: GENERATING | Action: image_gen_timeout | "
+                    f"Model: {label} | Timeout: {REQUEST_TIMEOUT_SEC}s | "
+                    f"Latency: {latency:.0f}ms | Attempt: {attempt + 1}"
+                )
+                return None  # timeout → skip to next step in chain
+
+            except Exception as e:
+                latency = (time.perf_counter() - t0) * 1000
+                is_429 = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
+                logger.error(
+                    f"[{session_id}] Phase: GENERATING | Action: image_gen_failed | "
+                    f"Model: {label} | Latency: {latency:.0f}ms | "
+                    f"Attempt: {attempt + 1} | 429: {is_429} | Error: {e}"
+                )
+                if is_429 and attempt < max_attempts - 1:
+                    wait = BACKOFF_SECS[attempt] if attempt < len(BACKOFF_SECS) else 4
+                    logger.info(
+                        f"[{session_id}] Phase: GENERATING | Action: 429_backoff | "
+                        f"Model: {label} | Wait: {wait}s"
+                    )
+                    await asyncio.sleep(wait)
+                    continue  # retry same model
+                return None  # non-429 or retries exhausted → next step
+
+        return None  # all attempts exhausted
+
+    # ----- public entry point -----
 
     async def generate(
         self,
@@ -93,8 +192,10 @@ class ImageGenerator:
     ) -> dict:
         """Generate an image asset. Returns dict with status, image_data, etc.
 
-        reference_images: list of (bytes, mime_type) tuples — product photo,
-        logo, etc. to include as visual context for the image model.
+        Chain order:
+          1. Vertex AI global  — primary model, **1 attempt only**
+          2. Developer API     — primary model, up to MAX_RETRIES_429 retries
+          3. Vertex AI         — fallback models, up to MAX_RETRIES_429 retries each
         """
         ratio = aspect_ratio or ASPECT_RATIOS.get(asset_type, "1:1")
         full_prompt = self._build_prompt(prompt, asset_type, brand_name, style_anchor, ratio)
@@ -113,143 +214,49 @@ class ImageGenerator:
         else:
             contents = full_prompt
 
-        for model_name, label, use_global in MODELS_CHAIN:
-            client = _get_global_client() if use_global else self._client
-            for attempt in range(1 + MAX_RETRIES_429):
-                t0 = time.perf_counter()
-                try:
-                    logger.info(
-                        f"[{session_id}] Phase: GENERATING | Action: image_gen_start | "
-                        f"Model: {label} ({model_name}) | Asset: {asset_type} | "
-                        f"Attempt: {attempt + 1}/{1 + MAX_RETRIES_429} | "
-                        f"Endpoint: {'global' if use_global else 'us-central1'}"
-                    )
-                    response = await client.aio.models.generate_content(
-                        model=model_name,
-                        contents=contents,
-                        config=types.GenerateContentConfig(
-                            response_modalities=["TEXT", "IMAGE"],
-                        ),
-                    )
-                    latency = (time.perf_counter() - t0) * 1000
+        # ------------------------------------------------------------------
+        # Step 1: Vertex AI global — primary model, 1 attempt only
+        # ------------------------------------------------------------------
+        result = await self._try_model(
+            session_id, _get_global_client(),
+            IMAGE_MODEL, "Nano Banana Pro (Vertex)", "global",
+            contents, asset_type, brand_name,
+            max_attempts=1,
+        )
+        if result:
+            return result
 
-                    if not response.candidates or not response.candidates[0].content.parts:
-                        logger.warning(
-                            f"[{session_id}] Phase: GENERATING | Action: empty_response | "
-                            f"Model: {label} | Latency: {latency:.0f}ms"
-                        )
-                        break  # empty response → skip to next model
-
-                    image_data, text_desc = self._extract_parts(response)
-                    if image_data is None:
-                        logger.warning(
-                            f"[{session_id}] Phase: GENERATING | Action: no_image_in_response | "
-                            f"Model: {label} | Latency: {latency:.0f}ms"
-                        )
-                        break  # no image part → skip to next model
-
-                    logger.info(
-                        f"[{session_id}] Phase: GENERATING | Action: image_generated | "
-                        f"Model: {label} | Asset: {asset_type} | Latency: {latency:.0f}ms | "
-                        f"Size: {len(image_data.data) / 1024:.0f}KB"
-                    )
-
-                    return {
-                        "status": "success",
-                        "asset_type": asset_type,
-                        "brand_name": brand_name,
-                        "model_used": model_name,
-                        "latency_ms": round(latency),
-                        "image_size_bytes": len(image_data.data),
-                        "image_bytes": image_data.data,
-                        "mime_type": image_data.mime_type,
-                        "description": text_desc or "Image generated successfully.",
-                    }
-
-                except Exception as e:
-                    latency = (time.perf_counter() - t0) * 1000
-                    is_429 = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
-                    logger.error(
-                        f"[{session_id}] Phase: GENERATING | Action: image_gen_failed | "
-                        f"Model: {label} | Latency: {latency:.0f}ms | "
-                        f"Attempt: {attempt + 1} | 429: {is_429} | Error: {e}"
-                    )
-                    if is_429 and attempt < MAX_RETRIES_429:
-                        wait = BACKOFF_SECS[attempt] if attempt < len(BACKOFF_SECS) else 4
-                        logger.info(
-                            f"[{session_id}] Phase: GENERATING | Action: 429_backoff | "
-                            f"Model: {label} | Wait: {wait}s"
-                        )
-                        await asyncio.sleep(wait)
-                        continue  # retry same model
-                    break  # non-429 or retries exhausted → next model
-
-        # --- GenAI Developer API fallback (API key mode) ---
-        # When all Vertex AI models fail, try via Developer API with API key
+        # ------------------------------------------------------------------
+        # Step 2: Developer API (api_key) — same primary model, retries
+        # ------------------------------------------------------------------
         if USE_DEVELOPER_API_FALLBACK and GEMINI_API_KEY:
-            dev_models = [
-                (DEVELOPER_API_IMAGE_MODEL, "GenAI " + DEVELOPER_API_IMAGE_MODEL),
-            ]
-            # Also try flash-image via Developer API if primary differs
-            if DEVELOPER_API_IMAGE_MODEL != IMAGE_MODEL_FALLBACK:
-                dev_models.append((IMAGE_MODEL_FALLBACK, "GenAI " + IMAGE_MODEL_FALLBACK))
+            dev_client = _get_dev_client()
+            if dev_client:
+                result = await self._try_model(
+                    session_id, dev_client,
+                    DEVELOPER_API_IMAGE_MODEL, "Nano Banana Pro (GenAI)", "developer-api",
+                    contents, asset_type, brand_name,
+                    max_attempts=1 + MAX_RETRIES_429,
+                )
+                if result:
+                    return result
 
-            for dev_model, dev_label in dev_models:
-                for attempt in range(1 + MAX_RETRIES_429):
-                    try:
-                        logger.info(
-                            f"[{session_id}] Phase: GENERATING | Action: developer_api_fallback | "
-                            f"Model: {dev_label} | Asset: {asset_type} | "
-                            f"Attempt: {attempt + 1}/{1 + MAX_RETRIES_429}"
-                        )
-                        dev_client = genai.Client(api_key=GEMINI_API_KEY)
-                        t0 = time.perf_counter()
-                        response = await dev_client.aio.models.generate_content(
-                            model=dev_model,
-                            contents=contents,
-                            config=types.GenerateContentConfig(
-                                response_modalities=["TEXT", "IMAGE"],
-                            ),
-                        )
-                        latency = (time.perf_counter() - t0) * 1000
-
-                        if response.candidates and response.candidates[0].content.parts:
-                            image_data, text_desc = self._extract_parts(response)
-                            if image_data:
-                                logger.info(
-                                    f"[{session_id}] Phase: GENERATING | Action: developer_api_success | "
-                                    f"Model: {dev_label} | Asset: {asset_type} | "
-                                    f"Latency: {latency:.0f}ms | Size: {len(image_data.data) / 1024:.0f}KB"
-                                )
-                                return {
-                                    "status": "success",
-                                    "asset_type": asset_type,
-                                    "brand_name": brand_name,
-                                    "model_used": dev_model,
-                                    "latency_ms": round(latency),
-                                    "image_size_bytes": len(image_data.data),
-                                    "image_bytes": image_data.data,
-                                    "mime_type": image_data.mime_type,
-                                    "description": text_desc or "Image generated successfully.",
-                                }
-                        logger.warning(
-                            f"[{session_id}] Phase: GENERATING | Action: developer_api_empty | "
-                            f"Model: {dev_label} | Latency: {latency:.0f}ms"
-                        )
-                        break  # empty response → next dev model
-                    except Exception as e:
-                        latency = (time.perf_counter() - t0) * 1000
-                        is_429 = "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)
-                        logger.error(
-                            f"[{session_id}] Phase: GENERATING | Action: developer_api_failed | "
-                            f"Model: {dev_label} | Attempt: {attempt + 1} | "
-                            f"429: {is_429} | Latency: {latency:.0f}ms | Error: {e}"
-                        )
-                        if is_429 and attempt < MAX_RETRIES_429:
-                            wait = BACKOFF_SECS[attempt] if attempt < len(BACKOFF_SECS) else 4
-                            await asyncio.sleep(wait)
-                            continue
-                        break  # non-429 or retries exhausted → next dev model
+        # ------------------------------------------------------------------
+        # Step 3: Vertex AI fallback models (flash-image, flash-preview)
+        # ------------------------------------------------------------------
+        fallback_models = [
+            (IMAGE_MODEL_FALLBACK,   "Nano Banana (fallback)"),
+            (IMAGE_MODEL_FALLBACK_2, "Flash Image Gen (fallback 2)"),
+        ]
+        for fb_model, fb_label in fallback_models:
+            result = await self._try_model(
+                session_id, self._client,
+                fb_model, fb_label, "us-central1",
+                contents, asset_type, brand_name,
+                max_attempts=1 + MAX_RETRIES_429,
+            )
+            if result:
+                return result
 
         return {
             "status": "error",

@@ -168,6 +168,7 @@ export default function App() {
         break;
 
       case 'image_generated':
+        console.log('[WS] image_generated event:', event.asset_type, event.url);
         addMessage({
           type: 'image_generated',
           url: event.url,

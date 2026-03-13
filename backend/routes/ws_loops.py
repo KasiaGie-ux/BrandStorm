@@ -41,6 +41,13 @@ def _store_event_on_session(session: Session, event: dict) -> None:
         session.brand_values = event["values"]
 
 
+# short delay inserted between consecutive structured events so that the
+# frontend can reveal them one‑by‑one rather than having everything appear
+# simultaneously when a single Live API turn contains a bunch of tags.
+# The previous behaviour was the source of the "everything at once" bug
+# when the agent output a name, tagline, story, values, palette, fonts, etc.
+_EVENT_STAGGER_DELAY = 1.2   # seconds – enough for each card to animate in & be read
+
 async def _flush_and_emit(
     ws: WebSocket, session: Session,
     text: str, seen_types: set[str],
@@ -50,6 +57,10 @@ async def _flush_and_emit(
     Sends a final agent_text with partial=False to replace the accumulated
     partial chunks (which may contain raw tags). The frontend replaces the
     last partial agent_text with this cleaned version, eliminating duplicates.
+
+    When multiple structured events are emitted at once we now pause briefly
+    between each one. This is the backend fix for the bug where the UI would
+    render the entire brand reveal in a single frame.
     """
     if not text:
         return
@@ -64,9 +75,13 @@ async def _flush_and_emit(
             "text": narration or "",
             "partial": False,
         })
+        # Pause so the narration text is visible before structured cards appear
+        await asyncio.sleep(1.0)
         for ev in events:
             await send_json(ws, ev)
             _store_event_on_session(session, ev)
+            # little gap so frontend <App> can schedule a reveal animation
+            await asyncio.sleep(_EVENT_STAGGER_DELAY)
     else:
         # No structured events — send the full text as final
         await send_json(ws, {
@@ -269,20 +284,43 @@ async def agent_loop(
                                 "phase": session.phase.value,
                             })
 
-                            # Auto-continue: if brand identity is ready (palette + fonts done)
-                            # but no images generated yet, nudge the agent to start generating.
-                            if (session.palette and not session.completed_assets
-                                    and session.phase == AgentPhase.AWAITING_INPUT):
-                                logger.info(f"[{session.id}] Action: auto_continue | Reason: brand identity ready, no assets yet")
+                            # Auto-continue: nudge agent to keep generating while
+                            # assets remain. Capped per-asset to avoid infinite loops.
+                            _MAX_AUTO_CONTINUE_PER_ASSET = 2
+                            remaining = session.total_assets - len(session.completed_assets)
+                            if (session.palette
+                                    and remaining > 0
+                                    and session.phase == AgentPhase.AWAITING_INPUT
+                                    and session.auto_continue_count < _MAX_AUTO_CONTINUE_PER_ASSET):
+                                session.auto_continue_count += 1
+                                done = ", ".join(session.completed_assets) or "none"
+                                if not session.completed_assets:
+                                    nudge = "Perfect. Now generate the visual assets — start with the logo."
+                                else:
+                                    nudge = (
+                                        f"Great, {done} done. Continue generating the remaining "
+                                        f"{remaining} asset(s). Keep going."
+                                    )
+                                logger.info(
+                                    f"[{session.id}] Action: auto_continue | "
+                                    f"Attempt: {session.auto_continue_count}/{_MAX_AUTO_CONTINUE_PER_ASSET} | "
+                                    f"Done: {done} | Remaining: {remaining}"
+                                )
                                 brand_state.transition_phase(session, AgentPhase.GENERATING)
                                 await live_session.send_client_content(
                                     turns=[types.Content(
                                         role="user",
-                                        parts=[types.Part.from_text(
-                                            text="Perfect. Now generate the visual assets — start with the logo."
-                                        )],
+                                        parts=[types.Part.from_text(text=nudge)],
                                     )],
                                     turn_complete=True,
+                                )
+                            elif (session.palette
+                                    and remaining > 0
+                                    and session.auto_continue_count >= _MAX_AUTO_CONTINUE_PER_ASSET):
+                                logger.warning(
+                                    f"[{session.id}] Action: auto_continue_exhausted | "
+                                    f"Attempts: {session.auto_continue_count} | "
+                                    f"Agent not responding — waiting for user"
                                 )
 
                             break
@@ -312,6 +350,11 @@ async def agent_loop(
                                 function_responses=[fn_response]
                             )
                             logger.info(f"[{session.id}] Action: tool_response_sent | Tool: {fc.name}")
+
+                            # Reset auto-continue counter — the agent responded
+                            # with a tool call so it's alive. Allow fresh nudges
+                            # after the next potential gap.
+                            session.auto_continue_count = 0
 
                             if fc.name == "finalize_brand_kit":
                                 logger.info(f"[{session.id}] Action: finalize_complete")

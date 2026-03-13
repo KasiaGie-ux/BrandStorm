@@ -108,7 +108,7 @@ export function ImageOverlay({ src, label, onClose }) {
   );
 }
 
-export function ImageTile({ msg, onImageClick }) {
+export function ImageTile({ msg, onImageClick, onImageLoad }) {
   const [loaded, setLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
   const resolvedUrl = resolveImageUrl(msg.url);
@@ -120,21 +120,24 @@ export function ImageTile({ msg, onImageClick }) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5, ease: easeCurve }}
       style={{
-        width: '100%', overflow: 'hidden', position: 'relative',
-        border: `2px solid ${raw.ink}`,
-        background: raw.cream,
+        width: '100%', position: 'relative',
+        borderRadius: 4,
+        background: '#f5f5f3',
         cursor: failed ? 'default' : 'pointer',
+        minHeight: 160,
       }}
       onClick={() => {
         if (!failed && resolvedUrl) onImageClick(resolvedUrl, label);
       }}
     >
+      {/* Shimmer placeholder behind the image */}
       {!loaded && !failed && (
         <div style={{
-          width: '100%', height: 200,
+          position: 'absolute', inset: 0,
           background: `linear-gradient(90deg, ${raw.line} 25%, rgba(0,0,0,0.04) 50%, ${raw.line} 75%)`,
           backgroundSize: '200% 100%',
           animation: 'shimmer 1.5s ease-in-out infinite',
+          zIndex: 0,
         }} />
       )}
 
@@ -157,14 +160,18 @@ export function ImageTile({ msg, onImageClick }) {
         </div>
       )}
 
+      {/* Image always in DOM, always visible — no display:none trick */}
       {!failed && (
         <img
           src={resolvedUrl}
           alt={label || 'Generated asset'}
-          onLoad={() => setLoaded(true)}
+          onLoad={() => { setLoaded(true); if (onImageLoad) onImageLoad(); }}
           onError={() => setFailed(true)}
           style={{
-            width: '100%', display: loaded ? 'block' : 'none',
+            width: '100%', display: 'block',
+            minHeight: 160, maxHeight: 560, objectFit: 'contain',
+            background: '#f5f5f3',
+            position: 'relative', zIndex: 1,
             opacity: loaded ? 1 : 0,
             transition: 'opacity 0.4s ease',
           }}
@@ -172,7 +179,7 @@ export function ImageTile({ msg, onImageClick }) {
       )}
 
       <div style={{
-        position: 'absolute', top: 10, left: 10,
+        position: 'absolute', top: 10, left: 10, zIndex: 2,
         padding: '4px 10px', background: raw.red, color: raw.white,
         fontSize: 9, fontWeight: 700, letterSpacing: '0.1em',
         fontFamily: fonts.body, textTransform: 'uppercase',
@@ -182,6 +189,8 @@ export function ImageTile({ msg, onImageClick }) {
         <div style={{
           padding: '10px 14px', fontSize: 12, color: raw.muted,
           fontFamily: fonts.body, borderTop: `1px solid ${raw.line}`,
+          position: 'relative', zIndex: 1,
+          background: raw.cream,
         }}>{msg.description}</div>
       )}
     </motion.div>

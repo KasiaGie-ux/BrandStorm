@@ -29,11 +29,15 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
     if (m.type === 'image_generated') completedEvents.push(`image:${m.asset_type}`);
   });
 
-  useEffect(() => {
+  const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
     }
-  }, [messages]);
+  }, []);
+
+  useEffect(() => {
+    scrollToBottom();
+  }, [messages, scrollToBottom]);
 
   useEffect(() => {
     if (!showOverlay) return;
@@ -144,7 +148,7 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
           {displayMessages.map((msg) => {
             const key = msg._id != null ? `m-${msg._id}` : `m-${msg.type}-${msg.url || msg.name || ''}`;
             if (msg.type === 'image_generated') {
-              return <ImageTile key={key} msg={msg} onImageClick={handleImageClick} />;
+              return <ImageTile key={key} msg={msg} onImageClick={handleImageClick} onImageLoad={scrollToBottom} />;
             }
             return (
               <MessageBubble

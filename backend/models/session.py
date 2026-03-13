@@ -81,6 +81,9 @@ class Session:
     # Whether packaging asset is expected (agent decides based on product type)
     expects_packaging: bool = True
 
+    # Guard against runaway auto_continue loops (capped at MAX_AUTO_CONTINUE)
+    auto_continue_count: int = 0
+
     @property
     def total_assets(self) -> int:
         return 4 if self.expects_packaging else 3

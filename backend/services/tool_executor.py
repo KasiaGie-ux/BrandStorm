@@ -5,6 +5,7 @@ Returns FunctionResponse to send back to the Live API session.
 Validates tool args with sensible defaults — never crashes on malformed input.
 """
 
+import io
 import logging
 import time
 
@@ -17,6 +18,10 @@ from services.voiceover import generate_voiceover
 
 logger = logging.getLogger("brand-agent")
 
+# Max dimension for reference images sent to the image model.
+# Large images (e.g. 2871×2000) cause internal tensor errors in Gemini.
+_MAX_REF_IMAGE_DIM = 1024
+
 # Human-readable labels for asset types (used in default prompts)
 _ASSET_LABELS: dict[str, str] = {
     "logo": "brand logo",
@@ -24,6 +29,46 @@ _ASSET_LABELS: dict[str, str] = {
     "instagram_post": "Instagram post",
     "packaging": "product packaging concept",
 }
+
+
+def _resize_image_bytes(
+    img_bytes: bytes, mime_type: str, max_dim: int, session_id: str,
+) -> tuple[bytes, str]:
+    """Resize image to fit within max_dim×max_dim, preserving aspect ratio.
+
+    Returns (resized_bytes, mime_type). Falls back to original if resize fails.
+    """
+    try:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(img_bytes))
+        w, h = img.size
+        if w <= max_dim and h <= max_dim:
+            return img_bytes, mime_type  # already small enough
+
+        # Scale to fit within max_dim
+        scale = min(max_dim / w, max_dim / h)
+        new_w, new_h = int(w * scale), int(h * scale)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+
+        buf = io.BytesIO()
+        fmt = "JPEG" if "jpeg" in mime_type or "jpg" in mime_type else "PNG"
+        img.save(buf, format=fmt, quality=85)
+        resized = buf.getvalue()
+
+        logger.info(
+            f"[{session_id}] Resized ref image: {w}×{h} → {new_w}×{new_h} | "
+            f"{len(img_bytes)//1024}KB → {len(resized)//1024}KB"
+        )
+        out_mime = "image/jpeg" if fmt == "JPEG" else "image/png"
+        return resized, out_mime
+
+    except ImportError:
+        logger.warning(f"[{session_id}] Pillow not installed — skipping resize")
+        return img_bytes, mime_type
+    except Exception as e:
+        logger.warning(f"[{session_id}] Resize failed: {e} — using original")
+        return img_bytes, mime_type
 
 
 class ToolExecutor:
@@ -158,9 +203,17 @@ class ToolExecutor:
         ref_images = []
         if asset_type in ("hero_lifestyle", "instagram_post", "packaging"):
             if session.product_image_bytes:
-                ref_images.append((session.product_image_bytes, session.product_image_mime))
+                resized = _resize_image_bytes(
+                    session.product_image_bytes, session.product_image_mime,
+                    _MAX_REF_IMAGE_DIM, session.id,
+                )
+                ref_images.append(resized)
             if session.logo_image_bytes:
-                ref_images.append((session.logo_image_bytes, session.logo_image_mime))
+                resized = _resize_image_bytes(
+                    session.logo_image_bytes, session.logo_image_mime,
+                    _MAX_REF_IMAGE_DIM, session.id,
+                )
+                ref_images.append(resized)
 
         # Enrich prompt: product + logo must be visible in the output
         enriched_prompt = prompt
