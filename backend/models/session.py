@@ -10,23 +10,59 @@ from typing import Any
 
 
 class AgentPhase(str, Enum):
-    """Agent state machine phases — agent controls transitions via tool calls."""
+    """Agent state machine phases — backend orchestrates SPEECH vs TOOL turns separately."""
     INIT = "INIT"
     ANALYZING = "ANALYZING"
-    PROPOSING = "PROPOSING"
+    ANALYSIS_SPEECH = "ANALYSIS_SPEECH"     # agent speaks analysis, no tools
+    PROPOSING = "PROPOSING"                 # agent calls propose_names, no speech
+    AWAITING_NAME = "AWAITING_NAME"         # waiting for user to pick a name
+    REVEAL_SPEECH = "REVEAL_SPEECH"         # agent comments on chosen name, no tools
+    REVEAL_TOOL = "REVEAL_TOOL"             # agent calls reveal_brand_identity, no speech
+    PALETTE_SPEECH = "PALETTE_SPEECH"       # agent teases palette, no tools
+    PALETTE_TOOL = "PALETTE_TOOL"           # agent calls generate_palette, no speech
+    FONTS_SPEECH = "FONTS_SPEECH"           # agent teases fonts, no tools
+    FONTS_TOOL = "FONTS_TOOL"               # agent calls suggest_fonts, no speech
+    IMAGE_SPEECH = "IMAGE_SPEECH"           # agent teases next image, no tools
+    IMAGE_TOOL = "IMAGE_TOOL"               # agent calls generate_image, no speech
+    VOICEOVER_SPEECH = "VOICEOVER_SPEECH"   # agent says closing + handoff, no tools
+    VOICEOVER_TOOL = "VOICEOVER_TOOL"       # agent calls generate_voiceover, no speech
     AWAITING_INPUT = "AWAITING_INPUT"
     GENERATING = "GENERATING"
     REFINING = "REFINING"
     COMPLETE = "COMPLETE"
 
 
-# Valid phase transitions
+# Valid phase transitions — permissive for the new micro-phases; strict ordering enforced by dispatcher
+_MICRO_PHASES = {
+    AgentPhase.ANALYSIS_SPEECH, AgentPhase.PROPOSING, AgentPhase.AWAITING_NAME,
+    AgentPhase.REVEAL_SPEECH, AgentPhase.REVEAL_TOOL,
+    AgentPhase.PALETTE_SPEECH, AgentPhase.PALETTE_TOOL,
+    AgentPhase.FONTS_SPEECH, AgentPhase.FONTS_TOOL,
+    AgentPhase.IMAGE_SPEECH, AgentPhase.IMAGE_TOOL,
+    AgentPhase.VOICEOVER_SPEECH, AgentPhase.VOICEOVER_TOOL,
+    AgentPhase.AWAITING_INPUT, AgentPhase.GENERATING,
+    AgentPhase.REFINING, AgentPhase.COMPLETE,
+}
+
 VALID_TRANSITIONS: dict[AgentPhase, set[AgentPhase]] = {
     AgentPhase.INIT: {AgentPhase.ANALYZING},
-    AgentPhase.ANALYZING: {AgentPhase.PROPOSING},
-    AgentPhase.PROPOSING: {AgentPhase.AWAITING_INPUT},
-    AgentPhase.AWAITING_INPUT: {AgentPhase.GENERATING, AgentPhase.PROPOSING},
-    AgentPhase.GENERATING: {AgentPhase.REFINING, AgentPhase.COMPLETE, AgentPhase.AWAITING_INPUT},
+    AgentPhase.ANALYZING: {AgentPhase.ANALYSIS_SPEECH, AgentPhase.PROPOSING},
+    AgentPhase.ANALYSIS_SPEECH: {AgentPhase.PROPOSING, AgentPhase.AWAITING_NAME},
+    AgentPhase.PROPOSING: {AgentPhase.AWAITING_NAME, AgentPhase.AWAITING_INPUT},
+    AgentPhase.AWAITING_NAME: {AgentPhase.REVEAL_SPEECH, AgentPhase.GENERATING},
+    AgentPhase.REVEAL_SPEECH: {AgentPhase.REVEAL_TOOL},
+    AgentPhase.REVEAL_TOOL: {AgentPhase.PALETTE_SPEECH, AgentPhase.AWAITING_INPUT},
+    AgentPhase.PALETTE_SPEECH: {AgentPhase.PALETTE_TOOL},
+    AgentPhase.PALETTE_TOOL: {AgentPhase.FONTS_SPEECH, AgentPhase.AWAITING_INPUT},
+    AgentPhase.FONTS_SPEECH: {AgentPhase.FONTS_TOOL},
+    AgentPhase.FONTS_TOOL: {AgentPhase.IMAGE_SPEECH, AgentPhase.AWAITING_INPUT},
+    AgentPhase.IMAGE_SPEECH: {AgentPhase.IMAGE_TOOL},
+    AgentPhase.IMAGE_TOOL: {AgentPhase.IMAGE_SPEECH, AgentPhase.VOICEOVER_SPEECH, AgentPhase.AWAITING_INPUT},
+    AgentPhase.VOICEOVER_SPEECH: {AgentPhase.VOICEOVER_TOOL},
+    AgentPhase.VOICEOVER_TOOL: {AgentPhase.COMPLETE, AgentPhase.AWAITING_INPUT},
+    AgentPhase.AWAITING_INPUT: {AgentPhase.GENERATING, AgentPhase.PROPOSING, AgentPhase.REVEAL_SPEECH,
+                                AgentPhase.AWAITING_NAME} | _MICRO_PHASES,
+    AgentPhase.GENERATING: {AgentPhase.REFINING, AgentPhase.COMPLETE, AgentPhase.AWAITING_INPUT} | _MICRO_PHASES,
     AgentPhase.REFINING: {AgentPhase.AWAITING_INPUT, AgentPhase.COMPLETE},
     AgentPhase.COMPLETE: {AgentPhase.GENERATING, AgentPhase.REFINING, AgentPhase.AWAITING_INPUT},
 }
@@ -87,6 +123,10 @@ class Session:
     # Guard against runaway auto_continue loops (capped at MAX_AUTO_CONTINUE)
     auto_continue_count: int = 0
 
+    # Pre-generated name proposals (set by parallel text-model call during analysis speech).
+    # Consumed by _dispatch_next_step and propose_names tool handler.
+    _pregen_names: list | None = field(default=None, repr=False)
+
     # Interrupt flag — set by receive_loop when user sends feedback during generation.
     # agent_loop checks this between tool calls and relays feedback to Live API.
     interrupt_text: str | None = None
@@ -105,6 +145,14 @@ class Session:
     # (finalize nudge) until frontend signals voiceover playback is done.
     voiceover_playing: bool = False
 
+    # Set True after the first successful generate_voiceover execution.
+    # Guards against duplicate tool calls from Gemini self-interruption.
+    voiceover_sent: bool = False
+
+    # Set True when auto-continue fires the "speak closing sentence" nudge (C1).
+    # C2 (generate_voiceover tool call) only fires after this is True.
+    closing_spoken: bool = False
+
     # Tracks WHAT the user wants changed so nudges can reference it.
     # e.g. "tagline", "logo", "palette", "fonts", "hero", "instagram"
     pending_regen_target: str | None = None
@@ -112,6 +160,12 @@ class Session:
     # Signaled by receive_loop when frontend reports audio playback finished.
     # agent_loop waits on this before sending auto-continue nudges.
     audio_done_event: Any = field(default=None, repr=False)
+
+    def __post_init__(self):
+        import asyncio
+        # Initialize once here — never reassigned elsewhere.
+        # Both _wait_and_nudge and _tool_background only call .clear()/.set().
+        self.frontend_ready = asyncio.Event()
 
     @property
     def total_assets(self) -> int:

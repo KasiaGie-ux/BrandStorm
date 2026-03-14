@@ -13,7 +13,7 @@ const DISPLAY_TYPES = [
   'name_proposals',
   'image_generated', 'tool_invoked', 'generation_complete',
   'palette_reveal', 'palette_ready', 'font_suggestion',
-  'voiceover_handoff', 'voiceover_greeting', 'voiceover_story',
+  'voiceover_greeting', 'voiceover_story',
 ];
 
 export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, imagePreview, onVoiceoverEnd, audioPlayback }) {
@@ -144,10 +144,6 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
     }
     // Hide agent_text inside any name narration range
     if (m.type === 'agent_text' && hideRanges.some(([start, end]) => i > start && i < end)) {
-      return false;
-    }
-    // Hide agent_text right before voiceover_handoff (it's the same spoken text)
-    if (m.type === 'agent_text' && messages.slice(i + 1, i + 4).some(later => later.type === 'voiceover_handoff')) {
       return false;
     }
     // After a name change, hide stale structured events from the previous brand

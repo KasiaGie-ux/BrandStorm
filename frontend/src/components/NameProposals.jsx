@@ -2,11 +2,17 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { raw, fonts, easeCurve } from '../styles/tokens';
 
+// Stagger delays — cards appear in quick succession when proposals arrive
+const CARD_STAGGER_MS = 180;
+
 export default function NameProposals({ names = [], autoSelectSeconds = 8, onSelect, narrationDone = false }) {
   const [selected, setSelected] = useState(null);
   const [countdown, setCountdown] = useState(autoSelectSeconds);
   const [hoveredIdx, setHoveredIdx] = useState(null);
+  // How many cards are currently visible (revealed progressively during speech)
+  const [visibleCount, setVisibleCount] = useState(0);
   const timerRef = useRef(null);
+  const revealTimers = useRef([]);
   const selectedRef = useRef(null);
 
   const recommended = names.find(n => n.recommended) || names[0];
@@ -19,10 +25,27 @@ export default function NameProposals({ names = [], autoSelectSeconds = 8, onSel
     if (onSelect) onSelect(name.name);
   }, [selected, onSelect]);
 
-  // Countdown only starts AFTER agent finishes narrating all names
+  // Quick staggered reveal — all cards appear in short succession on mount
+  useEffect(() => {
+    if (names.length === 0) return;
+    revealTimers.current.forEach(clearTimeout);
+    revealTimers.current = [];
+    setVisibleCount(0);
+
+    names.forEach((_, i) => {
+      const t = setTimeout(() => {
+        setVisibleCount(prev => Math.max(prev, i + 1));
+      }, i * CARD_STAGGER_MS);
+      revealTimers.current.push(t);
+    });
+
+    return () => revealTimers.current.forEach(clearTimeout);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [names.length]);
+
+  // Countdown starts ONLY after agent finishes narrating all names
   useEffect(() => {
     if (selected || names.length === 0 || !narrationDone) return;
-    // Reset countdown when narration finishes
     setCountdown(autoSelectSeconds);
     timerRef.current = setInterval(() => {
       setCountdown(prev => {
@@ -59,105 +82,106 @@ export default function NameProposals({ names = [], autoSelectSeconds = 8, onSel
         }}>CHOOSE YOUR BRAND NAME</span>
       </div>
 
-      {/* Cards */}
-      <div style={{
-        display: 'flex', gap: 12, flexWrap: 'wrap',
-      }}>
-        {names.map((n, i) => {
-          const isRecommended = n.recommended || (n === recommended && names.length > 0);
-          const isSelected = selected === n.name;
-          const isFaded = selected && !isSelected;
-          const isHovered = hoveredIdx === i;
+      {/* Cards — appear one by one during agent narration */}
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <AnimatePresence>
+          {names.slice(0, visibleCount).map((n, i) => {
+            const isRecommended = n.recommended || (n === recommended && names.length > 0);
+            const isSelected = selected === n.name;
+            const isFaded = selected && !isSelected;
+            const isHovered = hoveredIdx === i;
 
-          return (
-            <motion.button
-              key={n.id || i}
-              type="button"
-              initial={{ opacity: 0, y: 12 }}
-              animate={{
-                opacity: isFaded ? 0.25 : 1,
-                y: 0,
-                scale: isSelected ? 1.02 : 1,
-              }}
-              transition={{ delay: i * 0.08, duration: 0.4, ease: easeCurve }}
-              onClick={() => handleSelect(n)}
-              onMouseEnter={() => !selected && setHoveredIdx(i)}
-              onMouseLeave={() => setHoveredIdx(null)}
-              style={{
-                flex: '1 1 160px',
-                minWidth: 160,
-                minHeight: 160,
-                background: isSelected
-                  ? 'rgba(230,57,70,0.04)'
-                  : isRecommended
-                    ? 'rgba(230,57,70,0.03)'
-                    : 'rgba(255,255,255,0.5)',
-                borderTop: `2px solid ${isSelected || isHovered || isRecommended ? raw.red : 'rgba(0,0,0,0.08)'}`,
-                borderRight: `2px solid ${isSelected || isHovered || isRecommended ? raw.red : 'rgba(0,0,0,0.08)'}`,
-                borderBottom: `2px solid ${isSelected || isHovered || isRecommended ? raw.red : 'rgba(0,0,0,0.08)'}`,
-                borderLeft: `${isRecommended || isSelected ? 4 : 2}px solid ${isRecommended || isSelected || isHovered ? raw.red : 'rgba(0,0,0,0.08)'}`,
-                padding: '22px 24px',
-                cursor: selected ? 'default' : 'pointer',
-                textAlign: 'left',
-                fontFamily: fonts.body,
-                position: 'relative',
-                transition: 'all 0.3s cubic-bezier(0.16,1,0.3,1)',
-                transform: isHovered && !selected ? 'translateY(-3px)' : 'translateY(0)',
-                boxShadow: isHovered && !selected ? '0 8px 24px rgba(0,0,0,0.06)' : 'none',
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'center',
-              }}
-            >
-              {/* Recommended badge — top right */}
-              {isRecommended && !selected && (
-                <div style={{
-                  position: 'absolute', top: 10, right: 10,
-                  padding: '3px 8px',
-                  background: raw.red, color: raw.white,
-                  fontSize: 8, fontWeight: 700, letterSpacing: '0.14em',
-                  textTransform: 'uppercase', fontFamily: fonts.body,
-                }}>RECOMMENDED</div>
-              )}
-
-              {/* Selected checkmark */}
-              {isSelected && (
-                <motion.div
-                  initial={{ scale: 0 }}
-                  animate={{ scale: 1 }}
-                  style={{
+            return (
+              <motion.button
+                key={n.id || n.name || i}
+                type="button"
+                initial={{ opacity: 0, y: 20, scale: 0.96 }}
+                animate={{
+                  opacity: isFaded ? 0.25 : 1,
+                  y: 0,
+                  scale: isSelected ? 1.02 : 1,
+                }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.5, ease: easeCurve }}
+                onClick={() => handleSelect(n)}
+                onMouseEnter={() => !selected && setHoveredIdx(i)}
+                onMouseLeave={() => setHoveredIdx(null)}
+                style={{
+                  flex: '1 1 160px',
+                  minWidth: 160,
+                  minHeight: 160,
+                  background: isSelected
+                    ? 'rgba(230,57,70,0.04)'
+                    : isRecommended
+                      ? 'rgba(230,57,70,0.03)'
+                      : 'rgba(255,255,255,0.5)',
+                  borderTop: `2px solid ${isSelected || isHovered || isRecommended ? raw.red : 'rgba(0,0,0,0.08)'}`,
+                  borderRight: `2px solid ${isSelected || isHovered || isRecommended ? raw.red : 'rgba(0,0,0,0.08)'}`,
+                  borderBottom: `2px solid ${isSelected || isHovered || isRecommended ? raw.red : 'rgba(0,0,0,0.08)'}`,
+                  borderLeft: `${isRecommended || isSelected ? 4 : 2}px solid ${isRecommended || isSelected || isHovered ? raw.red : 'rgba(0,0,0,0.08)'}`,
+                  padding: '22px 24px',
+                  cursor: selected ? 'default' : 'pointer',
+                  textAlign: 'left',
+                  fontFamily: fonts.body,
+                  position: 'relative',
+                  transition: 'border-color 0.3s cubic-bezier(0.16,1,0.3,1), box-shadow 0.3s cubic-bezier(0.16,1,0.3,1), transform 0.3s cubic-bezier(0.16,1,0.3,1)',
+                  transform: isHovered && !selected ? 'translateY(-3px)' : 'translateY(0)',
+                  boxShadow: isHovered && !selected ? '0 8px 24px rgba(0,0,0,0.06)' : 'none',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'center',
+                }}
+              >
+                {/* Recommended badge */}
+                {isRecommended && !selected && (
+                  <div style={{
                     position: 'absolute', top: 10, right: 10,
-                    width: 24, height: 24, background: raw.red,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                    stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M20 6L9 17l-5-5" />
-                  </svg>
-                </motion.div>
-              )}
+                    padding: '3px 8px',
+                    background: raw.red, color: raw.white,
+                    fontSize: 8, fontWeight: 700, letterSpacing: '0.14em',
+                    textTransform: 'uppercase', fontFamily: fonts.body,
+                  }}>RECOMMENDED</div>
+                )}
 
-              {/* Name — BIG */}
-              <div style={{
-                fontFamily: fonts.display, fontSize: 36,
-                color: raw.ink, textTransform: 'uppercase',
-                lineHeight: 1.1, letterSpacing: '0.02em',
-              }}>{n.name}</div>
+                {/* Selected checkmark */}
+                {isSelected && (
+                  <motion.div
+                    initial={{ scale: 0 }}
+                    animate={{ scale: 1 }}
+                    style={{
+                      position: 'absolute', top: 10, right: 10,
+                      width: 24, height: 24, background: raw.red,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                      stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M20 6L9 17l-5-5" />
+                    </svg>
+                  </motion.div>
+                )}
 
-              {/* Rationale */}
-              <div style={{
-                fontSize: 13, lineHeight: 1.5, color: raw.muted,
-                marginTop: 12, fontFamily: fonts.body,
-              }}>{n.rationale}</div>
-            </motion.button>
-          );
-        })}
+                {/* Name */}
+                <div style={{
+                  fontFamily: fonts.display, fontSize: 36,
+                  color: raw.ink, textTransform: 'uppercase',
+                  lineHeight: 1.1, letterSpacing: '0.02em',
+                }}>{n.name}</div>
+
+                {/* Rationale */}
+                <div style={{
+                  fontSize: 13, lineHeight: 1.5, color: raw.muted,
+                  marginTop: 12, fontFamily: fonts.body,
+                }}>{n.rationale}</div>
+              </motion.button>
+            );
+          })}
+        </AnimatePresence>
       </div>
 
-      {/* Countdown — RED italic */}
+      {/* Countdown / waiting hint */}
       <AnimatePresence>
-        {!selected && (
+        {!selected && visibleCount > 0 && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}

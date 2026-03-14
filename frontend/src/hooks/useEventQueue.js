@@ -22,7 +22,7 @@ const VISUAL_TYPES = new Set([
   'brand_name_reveal', 'tagline_reveal',
   'brand_story', 'brand_values', 'palette_reveal',
   'font_suggestion', 'tool_invoked', 'image_generated',
-  'voiceover_handoff', 'voiceover_story', 'generation_complete',
+  'voiceover_handoff', 'voiceover_greeting', 'voiceover_story',
   'tone_of_voice',
 ]);
 
@@ -33,9 +33,10 @@ const STAGGER_MS = 600;
  * @param {Function} onFlushComplete — called after all queued events are flushed
  * @param {Function} isAudioPlayingFn — synchronous getter: () => boolean
  *        Must read a ref (not React state) to avoid render-cycle lag.
- *        Typically `audioPlayback.getIsPlaying`.
+ * @param {Function} isTurnActiveFn — synchronous getter: () => boolean
+ *        Must read a ref (not React state) to avoid render-cycle lag.
  */
-export default function useEventQueue(processEvent, onFlushComplete, isAudioPlayingFn) {
+export default function useEventQueue(processEvent, onFlushComplete, isAudioPlayingFn, isTurnActiveFn) {
   const queue = useRef([]);
   const flushTimers = useRef([]);
 
@@ -62,25 +63,46 @@ export default function useEventQueue(processEvent, onFlushComplete, isAudioPlay
     });
   }, [processEvent, onFlushComplete]);
 
+  /**
+   * Called when agent audio finishes playing.
+   * Flushes only if the turn is already complete — otherwise onTurnComplete will flush.
+   */
   const onAudioDone = useCallback(() => {
-    flush();
-  }, [flush]);
+    const isTurnActive = isTurnActiveFn ? isTurnActiveFn() : false;
+    if (!isTurnActive) {
+      flush();
+    }
+    // If turn still active, onTurnComplete will flush when agent_turn_complete arrives
+  }, [flush, isTurnActiveFn]);
+
+  /**
+   * Called when agent_turn_complete arrives.
+   * Flushes only if audio is already done — otherwise onAudioDone will flush.
+   */
+  const onTurnComplete = useCallback(() => {
+    const isPlaying = isAudioPlayingFn ? isAudioPlayingFn() : false;
+    if (!isPlaying) {
+      flush();
+    }
+    // If audio still playing, onAudioDone will flush when it finishes
+  }, [flush, isAudioPlayingFn]);
 
   /**
    * Try to enqueue a visual event. Returns true if queued (caller should skip),
    * false if not (caller should process immediately).
    *
-   * Uses `isAudioPlayingFn()` — a SYNCHRONOUS ref read — so there's
-   * no gap between audio starting and the queue becoming active.
+   * Queues if audio is playing OR if the turn is still active (prevents cards
+   * from appearing while the agent is still speaking).
    */
   const enqueue = useCallback((event) => {
     const isPlaying = isAudioPlayingFn ? isAudioPlayingFn() : false;
-    if (VISUAL_TYPES.has(event.type) && isPlaying) {
+    const isTurnActive = isTurnActiveFn ? isTurnActiveFn() : false;
+    if (VISUAL_TYPES.has(event.type) && (isPlaying || isTurnActive)) {
       queue.current.push(event);
       return true;
     }
     return false;
-  }, [isAudioPlayingFn]);
+  }, [isAudioPlayingFn, isTurnActiveFn]);
 
   // Cleanup on unmount — cancel any pending stagger timers
   useEffect(() => {
@@ -93,5 +115,5 @@ export default function useEventQueue(processEvent, onFlushComplete, isAudioPlay
   // Expose queue length for checking if empty
   const getQueueLength = useCallback(() => queue.current.length, []);
 
-  return { enqueue, onAudioDone, getQueueLength };
+  return { enqueue, onAudioDone, onTurnComplete, getQueueLength };
 }

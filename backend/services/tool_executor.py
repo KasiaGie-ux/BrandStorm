@@ -170,7 +170,26 @@ class ToolExecutor:
     async def _handle_propose_names(
         self, session: Session, args: dict,
     ) -> tuple[dict, dict | None]:
-        """propose_names — present 3 brand name proposals to user."""
+        """propose_names — present 3 brand name proposals to user.
+
+        If names were pre-generated in parallel (during analysis speech), return
+        them immediately without re-generating. The frontend already has the cards.
+        """
+        # Check if names were pre-generated in parallel — already sent to frontend
+        pregen = getattr(session, "_pregen_names", None)
+        if pregen:
+            session._pregen_names = None  # clear to prevent re-use
+            logger.info(
+                f"[{session.id}] Phase: PROPOSING | Action: propose_names_pregen_hit | "
+                f"Names: {[n['name'] for n in pregen]}"
+            )
+            result = {
+                "status": "success",
+                "message": "Done. Do NOT speak.",
+                "names": [n["name"] for n in pregen],
+            }
+            return result, None  # don't re-emit — already sent to frontend
+
         names = args.get("names", [])
         if not names:
             return {"status": "error", "error": "No names provided"}, None
@@ -198,7 +217,7 @@ class ToolExecutor:
         }
         result = {
             "status": "success",
-            "message": "Name proposals displayed. Wait for user to pick one.",
+            "message": "Done. Do NOT speak.",
             "names": [n["name"] for n in validated],
         }
         return result, event
@@ -258,7 +277,7 @@ class ToolExecutor:
         result = {
             "status": "success",
             "brand_name": brand_name,
-            "message": "Brand identity revealed. Now call generate_palette.",
+            "message": "Done. Do NOT speak.",
         }
         return result, last_event
 
@@ -290,7 +309,7 @@ class ToolExecutor:
         }
         result = {
             "status": "success",
-            "message": "Fonts displayed. Now generate images starting with the logo.",
+            "message": "Done. Do NOT speak.",
         }
         return result, event
 
@@ -533,11 +552,7 @@ class ToolExecutor:
 
         result = {
             "status": "success",
-            "message": (
-                "Palette displayed. Now say ONE sentence about the color story, "
-                "then IMMEDIATELY call suggest_fonts with heading and body fonts. "
-                "Do NOT mention logo or images yet."
-            ),
+            "message": "Done. Do NOT speak.",
             "mood": mood,
             "style_anchor": style_anchor,
             "product_colors": product_colors,
@@ -649,7 +664,7 @@ class ToolExecutor:
             # Fallback: generate story fresh
             story_wav = await _tts_generate(
                 session_id=session.id,
-                text=story_text or narration_text,
+                text=narration_text,
                 voice=NARRATOR_VOICE,
                 label="voiceover_story",
             )
@@ -710,11 +725,18 @@ class ToolExecutor:
                 f"Completing with 0 assets"
             )
 
-        zip_url = await self._storage.create_zip(
-            session_id=session.id,
-            asset_urls=session.asset_urls,
-        )
-        session.zip_url = zip_url
+        try:
+            zip_url = await self._storage.create_zip(
+                session_id=session.id,
+                asset_urls=session.asset_urls,
+            )
+            session.zip_url = zip_url
+        except Exception as e:
+            logger.error(
+                f"[{session.id}] Phase: GENERATING | Action: zip_creation_failed | Error: {e}"
+            )
+            zip_url = None
+            session.zip_url = None
 
         # Build images array from asset_urls for frontend
         images = []
@@ -731,6 +753,7 @@ class ToolExecutor:
             "brand_name": session.brand_name,
             "assets_count": len(session.completed_assets),
             "zip_url": zip_url,
+            "message": "Done. Do NOT speak.",
         }
         event = {
             "type": "generation_complete",
