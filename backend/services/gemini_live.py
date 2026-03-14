@@ -129,7 +129,7 @@ TOOL_DECLARATIONS = types.Tool(
                 properties={
                     "asset_type": types.Schema(
                         type=types.Type.STRING,
-                        enum=["logo", "hero_lifestyle", "instagram_post", "packaging"],
+                        enum=["logo", "hero_lifestyle", "instagram_post"],
                     ),
                     "prompt": types.Schema(
                         type=types.Type.STRING,

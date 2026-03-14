@@ -168,14 +168,14 @@ TYPOGRAPHY & DESIGN DIRECTION:
 Bespoke letterforms: {typography_style}.
 Every stroke, terminal, and counter is purposeful. The word '{brand_name}' reads
 clearly even at 32px. Impeccable optical kerning -- each letter pair balanced by eye.
-Imagine it etched into metal, embossed on heavy paper, reversed on dark background.
 {agent_creative_hint}
 
 {palette_instruction}
 
 COMPOSITION:
-Strict flat vector lockup on a clean, single-color background. Grid-based type
-architecture -- every element aligned to an invisible structure. The brand name is
+Strict flat vector lockup. The background is a single solid color — white if the
+logo is dark, dark if the logo is light — chosen for maximum contrast and legibility.
+Grid-based type architecture -- every element aligned to an invisible structure. The brand name is
 the dominant element -- confident and unhurried. If a symbol accompanies the type,
 it is a single abstract geometric shape that echoes the brand's essence.
 Generous whitespace -- the logo breathes.
@@ -190,6 +190,10 @@ THE PRODUCT:
 The reference photo shows the actual product. This exact product appears in the final
 image -- same shape, proportions, and key details. It is the undeniable hero of the
 composition, grounded in a physical environment.
+The product is shown in a natural, physically plausible position — as it would rest
+on a surface or be held in real life. Present the product in its most polished,
+idealized form — pristine surfaces, perfect condition, studio-quality rendering
+regardless of the reference photo quality.
 
 SCENE AND MOOD:
 Style: {style_anchor}. Mood: {mood}.
@@ -217,6 +221,9 @@ INSTAGRAM_TEMPLATE = """Generate a scroll-stopping Instagram post photograph for
 THE PRODUCT:
 The reference photo shows the actual product. Feature it prominently -- same shape,
 same details. The product commands attention in the frame.
+The product is shown in a natural, physically plausible position — as it would rest
+on a surface or be worn in real life. Present the product in its most polished,
+idealized form — pristine, flawless, studio-quality regardless of reference photo quality.
 
 VISUAL IMPACT:
 Style: {style_anchor}. Mood: {mood}.

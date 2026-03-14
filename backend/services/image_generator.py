@@ -28,7 +28,6 @@ ASPECT_RATIOS: dict[str, str] = {
     "logo": "1:1",
     "hero_lifestyle": "16:9",
     "instagram_post": "4:5",
-    "packaging": "1:1",
 }
 
 MAX_RETRIES_429 = 3
@@ -208,6 +207,13 @@ class ImageGenerator:
             palette=palette, has_logo_ref=has_logo_ref,
             tagline=tagline, brand_values=brand_values,
         )
+
+        # DEBUG: log full prompt for analysis (dev only)
+        if DEBUG_API_KEY_ONLY:
+            logger.info(
+                f"[{session_id}] DEBUG_PROMPT | Asset: {asset_type} | "
+                f"Style: {style_anchor} | Prompt:\n{full_prompt}\n--- END PROMPT ---"
+            )
 
         # Build contents: reference images + text prompt, or text-only
         if reference_images:
