@@ -142,6 +142,16 @@ def _build_logo_placement(has_logo_ref: bool) -> str:
     )
 
 
+def _build_tagline_typography(tagline: str | None) -> str:
+    """Tagline rendering instruction for logo template."""
+    if not tagline:
+        return ""
+    return (
+        f"The tagline \"{tagline}\" renders in a tracking-widened, microscopic "
+        f"geometric sans-serif — subordinate to the wordmark, precise and unhurried."
+    )
+
+
 def _brand_context_block(
     brand_name: str,
     tagline: str | None,
@@ -165,10 +175,13 @@ LOGO_TEMPLATE = """Generate a brand logo -- a refined typographic wordmark for '
 {brand_context}
 
 TYPOGRAPHY & DESIGN DIRECTION:
+Strictly flat 2D vector graphic. Every shape has razor-sharp, perfectly clean edges
+with crisp opaque solid fills — absolute typographic precision.
 Bespoke letterforms: {typography_style}.
 Every stroke, terminal, and counter is purposeful. The word '{brand_name}' reads
 clearly even at 32px. Impeccable optical kerning -- each letter pair balanced by eye.
 {agent_creative_hint}
+{tagline_typography}
 
 {palette_instruction}
 
@@ -177,7 +190,9 @@ Strict flat vector lockup. The background is a single solid color — white if t
 logo is dark, dark if the logo is light — chosen for maximum contrast and legibility.
 Grid-based type architecture -- every element aligned to an invisible structure. The brand name is
 the dominant element -- confident and unhurried. If a symbol accompanies the type,
-it is a single abstract geometric shape that echoes the brand's essence.
+it is a single abstract geometric form — not a standard icon or clipart shape, but a
+custom minimalist construction that architecturally interprets the brand's essence.
+Bold, unhurried, confident.
 Generous whitespace -- the logo breathes.
 
 FORMAT: {aspect_ratio}, single unified lockup."""
@@ -269,6 +284,7 @@ def build_image_prompt(
     palette_instruction = _build_palette_instruction(palette)
     logo_placement = _build_logo_placement(has_logo_ref)
     brand_context = _brand_context_block(brand_name, tagline, brand_values)
+    tagline_typography = _build_tagline_typography(tagline)
 
     # Agent's free-text prompt becomes a creative hint woven into the brief
     agent_creative_hint = ""
@@ -296,4 +312,5 @@ def build_image_prompt(
         typography_style=style["typography_style"],
         palette_instruction=palette_instruction,
         logo_placement=logo_placement,
+        tagline_typography=tagline_typography,
     )
