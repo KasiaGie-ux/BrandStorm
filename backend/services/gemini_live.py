@@ -129,14 +129,36 @@ TOOL_DECLARATIONS = types.Tool(
                 properties={
                     "asset_type": types.Schema(
                         type=types.Type.STRING,
-                        enum=["logo", "hero_lifestyle", "instagram_post", "packaging"],
+                        enum=["logo", "hero_lifestyle", "instagram_post"],
                     ),
-                    "prompt": types.Schema(type=types.Type.STRING),
+                    "prompt": types.Schema(
+                        type=types.Type.STRING,
+                        description=(
+                            "Creative direction for the image. Be specific and visual: "
+                            "describe the feeling, composition, lighting mood, and how "
+                            "it connects to the product. Reference what you see in the "
+                            "product photo. Example: 'warm golden lighting on marble "
+                            "surface, the bottle's amber glass catching the light, "
+                            "editorial intimacy.'"
+                        ),
+                    ),
                     "aspect_ratio": types.Schema(
                         type=types.Type.STRING,
                         enum=["1:1", "4:5", "16:9"],
                     ),
-                    "style_anchor": types.Schema(type=types.Type.STRING),
+                    "style_anchor": types.Schema(
+                        type=types.Type.STRING,
+                        enum=["luxury", "modern", "eco", "energetic", "gentle", "edgy"],
+                        description=(
+                            "Pick ONE style based on the product: "
+                            "luxury = warm editorial, marble/velvet, intimate; "
+                            "modern = clean precision, geometric, sharp; "
+                            "eco = natural daylight, organic textures, earthy; "
+                            "energetic = vivid colors, dynamic angles, playful; "
+                            "gentle = soft glow, pastels, delicate; "
+                            "edgy = dramatic contrast, industrial, raw"
+                        ),
+                    ),
                 },
                 required=["asset_type", "prompt", "style_anchor"],
             ),

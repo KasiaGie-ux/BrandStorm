@@ -40,20 +40,19 @@ _ASSET_LABELS: dict[str, str] = {
 
 _DEFAULT_PROMPTS: dict[str, str] = {
     "logo": (
-        "Professional brand identity design. Clean, modern, memorable. "
-        "NOT clip art, NOT generic icons. Think Pentagram or Sagmeister & Walsh "
-        "quality. Minimalist but distinctive. The logo must work at small sizes. "
-        "Typography-focused with optional symbol."
+        "A distinctive brand identity mark. Typography-driven with an optional "
+        "minimal geometric symbol. The letterforms feel crafted and intentional, "
+        "as if shaped by a master typographer."
     ),
     "hero_lifestyle": (
-        "A premium lifestyle hero shot featuring the product in a beautiful, "
-        "aspirational setting. Natural lighting, editorial quality. "
-        "The product must be the clear hero of the shot."
+        "An editorial-quality lifestyle photograph. The product is the clear hero, "
+        "placed in an environment that tells the brand story. Think magazine cover, "
+        "with natural lighting, intentional props, and breathing space."
     ),
     "instagram_post": (
-        "A visually striking Instagram post (4:5 portrait) featuring the product. "
-        "Clean composition, brand-consistent colors, ready to post. "
-        "Modern, editorial, scroll-stopping."
+        "A scroll-stopping social media photograph. The product fills the frame "
+        "with confidence. Unexpected angle or striking color contrast that makes "
+        "someone stop scrolling and double-tap."
     ),
 }
 
@@ -323,11 +322,7 @@ class PreGenerator:
         """
         t0 = time.perf_counter()
 
-        base_prompt = _DEFAULT_PROMPTS.get(asset_type, "")
-        prompt = (
-            f"Create a professional {_ASSET_LABELS[asset_type]} "
-            f"for '{brand_name}'. {base_prompt}"
-        )
+        prompt = _DEFAULT_PROMPTS.get(asset_type, "")
 
         # Reference images
         ref_images = []
@@ -345,18 +340,10 @@ class PreGenerator:
                 )
                 ref_images.append(resized)
 
-            prompt += (
-                " IMPORTANT: The generated image MUST prominently feature "
-                "the exact product from the reference photo."
-            )
-
-        # Use palette colors if available
-        if session.palette:
-            hex_list = ", ".join(
-                c.get("hex", "") for c in session.palette if c.get("hex")
-            )
-            if hex_list:
-                prompt += f" Use these brand colors: {hex_list}."
+        # Infer style from session or default
+        style_anchor = getattr(session, "user_preferences", {}).get(
+            "style_anchor", "modern",
+        ) if hasattr(session, "user_preferences") else "modern"
 
         logger.info(
             f"[{session.id}] Action: pregen_image_start | "
@@ -368,8 +355,12 @@ class PreGenerator:
             prompt=prompt,
             asset_type=asset_type,
             brand_name=brand_name,
-            style_anchor="modern luxury",
+            style_anchor=style_anchor,
             reference_images=ref_images if ref_images else None,
+            palette=session.palette,
+            has_logo_ref=bool(session.logo_image_bytes),
+            tagline=session.tagline,
+            brand_values=session.brand_values,
         )
 
         latency = (time.perf_counter() - t0) * 1000

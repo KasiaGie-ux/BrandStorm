@@ -405,39 +405,26 @@ class ToolExecutor:
                 )
                 ref_images.append(resized)
 
-        # Enrich prompt: product + logo must be visible in the output
-        enriched_prompt = prompt
-        if asset_type in ("hero_lifestyle", "instagram_post") and ref_images:
-            enriched_prompt += (
-                " IMPORTANT: The generated image MUST prominently feature the exact product "
-                "from the reference photo. The brand logo must be clearly visible and "
-                "naturally integrated into the composition."
-            )
-
-        # Append palette hex values if available
-        if session.palette and asset_type in ("hero_lifestyle", "instagram_post"):
-            hex_list = ", ".join(
-                c.get("hex", "") for c in session.palette if c.get("hex")
-            )
-            if hex_list:
-                enriched_prompt += f" Use these brand colors: {hex_list}."
-
         logger.info(
             f"[{session.id}] Phase: GENERATING | Action: image_gen_starting | "
             f"Asset: {asset_type} | Brand: {brand_name} | Style: {style_anchor} | "
-            f"Prompt length: {len(enriched_prompt)} | "
+            f"Prompt length: {len(prompt)} | "
             f"Ref images: {len(ref_images)} | "
             f"Palette: {'yes' if session.palette else 'no'}"
         )
 
         result = await self._image_gen.generate(
             session_id=session.id,
-            prompt=enriched_prompt,
+            prompt=prompt,
             asset_type=asset_type,
             brand_name=brand_name,
             style_anchor=style_anchor,
             aspect_ratio=aspect_ratio,
             reference_images=ref_images if ref_images else None,
+            palette=session.palette,
+            has_logo_ref=bool(session.logo_image_bytes),
+            tagline=session.tagline,
+            brand_values=session.brand_values,
         )
 
         event = None

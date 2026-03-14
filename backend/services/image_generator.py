@@ -28,7 +28,6 @@ ASPECT_RATIOS: dict[str, str] = {
     "logo": "1:1",
     "hero_lifestyle": "16:9",
     "instagram_post": "4:5",
-    "packaging": "1:1",
 }
 
 MAX_RETRIES_429 = 3
@@ -190,16 +189,31 @@ class ImageGenerator:
         style_anchor: str = "",
         aspect_ratio: str | None = None,
         reference_images: list[tuple[bytes, str]] | None = None,
+        palette: list[dict[str, str]] | None = None,
+        has_logo_ref: bool = False,
+        tagline: str | None = None,
+        brand_values: list[str] | None = None,
     ) -> dict:
         """Generate an image asset. Returns dict with status, image_data, etc.
 
         Chain order:
-          1. Vertex AI global  — primary model, **1 attempt only**
-          2. Developer API     — primary model, up to MAX_RETRIES_429 retries
-          3. Vertex AI         — fallback models, up to MAX_RETRIES_429 retries each
+          1. Vertex AI global  -- primary model, **1 attempt only**
+          2. Developer API     -- primary model, up to MAX_RETRIES_429 retries
+          3. Vertex AI         -- fallback models, up to MAX_RETRIES_429 retries each
         """
         ratio = aspect_ratio or ASPECT_RATIOS.get(asset_type, "1:1")
-        full_prompt = self._build_prompt(prompt, asset_type, brand_name, style_anchor, ratio)
+        full_prompt = self._build_prompt(
+            prompt, asset_type, brand_name, style_anchor, ratio,
+            palette=palette, has_logo_ref=has_logo_ref,
+            tagline=tagline, brand_values=brand_values,
+        )
+
+        # DEBUG: log full prompt for analysis (dev only)
+        if DEBUG_API_KEY_ONLY:
+            logger.info(
+                f"[{session_id}] DEBUG_PROMPT | Asset: {asset_type} | "
+                f"Style: {style_anchor} | Prompt:\n{full_prompt}\n--- END PROMPT ---"
+            )
 
         # Build contents: reference images + text prompt, or text-only
         if reference_images:
@@ -303,26 +317,23 @@ class ImageGenerator:
     def _build_prompt(
         self, prompt: str, asset_type: str, brand_name: str,
         style_anchor: str, aspect_ratio: str,
+        palette: list[dict[str, str]] | None = None,
+        has_logo_ref: bool = False,
+        tagline: str | None = None,
+        brand_values: list[str] | None = None,
     ) -> str:
-        parts: list[str] = []
-
-        # Logo-specific quality preamble
-        if asset_type == "logo":
-            parts.append(
-                "Professional brand identity design. Clean, modern, memorable. "
-                "NOT clip art, NOT generic icons. Think Pentagram or Sagmeister & Walsh "
-                "quality. Minimalist but distinctive. The logo must work at small sizes. "
-                "Typography-focused with optional symbol. Use the brand's color palette."
-            )
-
-        parts.append(f"Create a professional {asset_type} for the brand '{brand_name}'.")
-        parts.append(prompt)
-
-        if style_anchor:
-            parts.append(f"Visual style: {style_anchor}.")
-        parts.append(f"Aspect ratio: {aspect_ratio}.")
-        parts.append("High quality, clean design, suitable for commercial use.")
-        return " ".join(parts)
+        from prompts.image_prompts import build_image_prompt
+        return build_image_prompt(
+            agent_prompt=prompt,
+            asset_type=asset_type,
+            brand_name=brand_name,
+            style_anchor=style_anchor,
+            aspect_ratio=aspect_ratio,
+            palette=palette,
+            has_logo_ref=has_logo_ref,
+            tagline=tagline,
+            brand_values=brand_values,
+        )
 
     @staticmethod
     def _extract_parts(response: object) -> tuple[object | None, str | None]:

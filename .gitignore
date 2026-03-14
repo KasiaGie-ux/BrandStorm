@@ -43,3 +43,9 @@ backend/generated_assets/
 
 # Logs
 *.log
+
+#Terraform
+infra/.terraform/
+infra/terraform.tfstate
+infra/terraform.tfstate.backup
+infra/terraform.tfvars
