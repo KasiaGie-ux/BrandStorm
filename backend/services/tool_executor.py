@@ -180,39 +180,21 @@ class ToolExecutor:
     ) -> tuple[dict, dict | None]:
         """propose_names — present 3 brand name proposals to user.
 
-        If names were pre-generated in parallel (during analysis speech) AND
-        already sent to the frontend (_pregen_names_sent=True), return them
-        immediately — the cards are already visible.
-
-        If _pregen_names_sent is False, the user never saw the pregen names
-        (e.g. this is a retry after name rejection). Ignore the stale cache
-        and use the agent's fresh args instead.
+        Always uses agent's args and returns the event. Pregen cache is cleared
+        if present. Frontend dedup handles exact-duplicate suppression.
         """
-        # Only use pregen cache if cards were already sent to frontend
+        # Clear pregen cache (consumed by ws_agent early event or pregen task).
+        # Never return early here — always use agent's args and return the event.
+        # (The old early-return None blocked retries when _pregen_names_sent was still
+        # True due to a concurrent pregen / bg-task timing race.)
         pregen = getattr(session, "_pregen_names", None)
-        pregen_sent = getattr(session, "_pregen_names_sent", False)
-        if pregen and pregen_sent:
-            session._pregen_names = None  # clear to prevent re-use
+        if pregen:
+            session._pregen_names = None
             session._pregen_names_sent = False
             logger.info(
-                f"[{session.id}] Phase: PROPOSING | Action: propose_names_pregen_hit | "
+                f"[{session.id}] Phase: PROPOSING | Action: propose_names_pregen_cleared | "
                 f"Names: {[n['name'] for n in pregen]}"
             )
-            result = {
-                "status": "success",
-                "message": "Done. Do NOT speak.",
-                "names": [n["name"] for n in pregen],
-            }
-            return result, None  # don't re-emit — already sent to frontend
-
-        # Stale pregen cache (cards never shown) — discard and use agent's args
-        if pregen and not pregen_sent:
-            logger.info(
-                f"[{session.id}] Phase: PROPOSING | Action: propose_names_pregen_discarded | "
-                f"Reason: _pregen_names_sent=False (retry/regen) | "
-                f"Using agent args instead"
-            )
-            session._pregen_names = None
 
         names = args.get("names", [])
         if not names:

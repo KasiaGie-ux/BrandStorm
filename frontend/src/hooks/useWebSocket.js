@@ -52,6 +52,7 @@ export default function useWebSocket({ onMessage, onStatusChange }) {
     };
 
     ws.onclose = () => {
+      if (wsRef.current !== ws) return; // replaced by a newer connect() call — ignore
       wsRef.current = null;
       if (intentionalClose.current) {
         updateStatus('disconnected');

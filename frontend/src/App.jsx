@@ -454,20 +454,14 @@ export default function App() {
         break;
 
       case 'name_proposals': {
-        // Dedup: pregen sends first batch, agent may also call propose_names.
-        // Block second batch unless user has already chosen a name (brand_name_reveal present).
-        // This covers normal flow (pregen + agent both send) while allowing rejection retries.
+        // Dedup: skip only exact duplicates (same names, different send).
+        // Allow new batches unconditionally — retries after rejection must show new proposals.
         setMessages(prev => {
-          const hasExisting = prev.some(m => m.type === 'name_proposals');
-          if (hasExisting) {
-            // Same names — always skip (duplicate send)
-            const lastProposal = [...prev].reverse().find(m => m.type === 'name_proposals');
-            const existingNames = (lastProposal?.names || []).map(n => n.name).sort().join(',');
+          const lastProposal = [...prev].reverse().find(m => m.type === 'name_proposals');
+          if (lastProposal) {
+            const existingNames = (lastProposal.names || []).map(n => n.name).sort().join(',');
             const newNames = (event.names || []).map(n => n.name).sort().join(',');
-            if (existingNames === newNames) return prev;
-            // Block second batch unless name was already chosen (brand_name_reveal = chosen)
-            const nameChosen = prev.some(m => m.type === 'brand_name_reveal');
-            if (!nameChosen) return prev;
+            if (existingNames === newNames) return prev; // exact duplicate — skip
           }
           const next = [...prev, { type: 'name_proposals', names: event.names, auto_select_seconds: event.auto_select_seconds || 8, _id: ++msgIdCounter.current }];
           messagesRef.current = next;

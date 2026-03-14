@@ -112,6 +112,7 @@ export default function useAudioPlayback() {
       source.buffer = buffer;
       source.connect(analyser); // analyser is already connected to destination
       source.onended = () => {
+        if (currentSourceRef.current !== source) return; // flushed/replaced — ghost callback
         currentSourceRef.current = null;
         play();
       };
@@ -138,16 +139,13 @@ export default function useAudioPlayback() {
   /** Stop playback immediately and clear the queue (barge-in / turn end). */
   const flush = useCallback(() => {
     queueRef.current.length = 0;
-    if (currentSourceRef.current) {
-      try {
-        currentSourceRef.current.stop();
-      } catch {
-        // already stopped
-      }
-      currentSourceRef.current = null;
-    }
+    const src = currentSourceRef.current;
+    currentSourceRef.current = null; // null BEFORE stop so onended guard fires correctly
     playingRef.current = false;
     setIsPlaying(false);
+    if (src) {
+      try { src.stop(); } catch { /* already stopped */ }
+    }
   }, []);
 
   /** Toggle mute — chunks still arrive but don't play. */

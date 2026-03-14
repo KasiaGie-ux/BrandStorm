@@ -333,39 +333,35 @@ async def agent_loop(
                                 "phase": session.phase.value,
                             })
 
-                            # For propose_names: send cards IMMEDIATELY (before bg task)
+                            # For propose_names: send cards IMMEDIATELY (before bg task).
+                            # Always send — frontend dedup handles exact duplicates.
+                            # (Gating on _pregen_names_sent caused retries to be swallowed
+                            # when the flag was still True from a concurrent pregen task.)
                             if fc.name == "propose_names":
-                                _has_pregen = getattr(session, "_pregen_names_sent", False)
-                                if not _has_pregen:
-                                    args_dict = dict(fc.args) if fc.args else {}
-                                    raw_names = args_dict.get("names", [])
-                                    validated = []
-                                    for i, n in enumerate(raw_names[:3]):
-                                        if isinstance(n, dict) and n.get("name"):
-                                            entry = {
-                                                "id": i + 1,
-                                                "name": n["name"],
-                                                "rationale": n.get("rationale", ""),
-                                            }
-                                            if n.get("recommended"):
-                                                entry["recommended"] = True
-                                            validated.append(entry)
-                                    if validated:
-                                        session._pregen_names_sent = True
-                                        early_event = {
-                                            "type": "name_proposals",
-                                            "names": validated,
-                                            "auto_select_seconds": 8,
+                                args_dict = dict(fc.args) if fc.args else {}
+                                raw_names = args_dict.get("names", [])
+                                validated = []
+                                for i, n in enumerate(raw_names[:3]):
+                                    if isinstance(n, dict) and n.get("name"):
+                                        entry = {
+                                            "id": i + 1,
+                                            "name": n["name"],
+                                            "rationale": n.get("rationale", ""),
                                         }
-                                        await send_json(ws, early_event)
-                                        logger.info(
-                                            f"[{session.id}] Action: name_proposals_early | "
-                                            f"Names: {[n['name'] for n in validated]}"
-                                        )
-                                else:
+                                        if n.get("recommended"):
+                                            entry["recommended"] = True
+                                        validated.append(entry)
+                                if validated:
+                                    session._pregen_names_sent = True
+                                    early_event = {
+                                        "type": "name_proposals",
+                                        "names": validated,
+                                        "auto_select_seconds": 8,
+                                    }
+                                    await send_json(ws, early_event)
                                     logger.info(
-                                        f"[{session.id}] Action: name_proposals_early_skip | "
-                                        f"Pregen already sent"
+                                        f"[{session.id}] Action: name_proposals_early | "
+                                        f"Names: {[n['name'] for n in validated]}"
                                     )
 
                             if fc.name == "generate_voiceover":
