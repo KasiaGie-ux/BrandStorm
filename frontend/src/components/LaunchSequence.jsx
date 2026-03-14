@@ -167,14 +167,13 @@ function IntroText({ text, visible }) {
 }
 
 // ═══════════ LAUNCH SEQUENCE ═══════════
-export default function LaunchSequence({ imagePreview, firstAgentText, openingData, onComplete, getIsAudioPlaying }) {
+export default function LaunchSequence({ imagePreview, firstAgentText, onComplete, firstTurnDone, isPlaying }) {
   // Phases: dimming → connecting → words → intro → transition
   const [phase, setPhase] = useState('dimming');
   const [dimLevel, setDimLevel] = useState(0);
   const completeFired = useRef(false);
   const introTimerRef = useRef(null);
   const wordsTriggered = useRef(false);
-  const audioWasPlaying = useRef(false);
 
   // Parse the latest accumulated text — opener is locked at words phase,
   // intro updates as more text streams in
@@ -202,26 +201,24 @@ export default function LaunchSequence({ imagePreview, firstAgentText, openingDa
     return () => clearTimeout(t);
   }, []);
 
-  // Phase 2: When openingData or firstAgentText arrives, move to 'words' phase
+  // Phase 2: When firstAgentText transcription arrives, move to 'words' phase
   useEffect(() => {
-    if (wordsTriggered.current) return;
-
-    // Priority 1: structured openingData from text-model call
-    if (openingData?.words?.length >= 2) {
-      wordsTriggered.current = true;
-      const openerStr = openingData.words.map(w => w + '.').join(' ');
-      setLockedOpener(openerStr);
-      setLockedIntro(openingData.intro || "I'm Charon, your creative director. Let's build something extraordinary.");
-      setPhase('words');
+    if (wordsTriggered.current) {
+      // Already triggered — only allow transcription to enrich the intro text
+      if (parsed.intro && phase !== 'transition' && parsed.intro.length > lockedIntro.length) {
+        setLockedIntro(parsed.intro);
+      }
+      return;
     }
-    // Priority 2: parsed from transcription (fallback)
-    else if (firstAgentText && parsed.opener && parsed.opener.includes('.')) {
+
+    // Require ≥2 complete word-period tokens to avoid triggering on partial
+    // first word (e.g. "uminous." mid-stream)
+    if (firstAgentText && parsed.opener && (parsed.opener.match(/\./g) || []).length >= 2) {
       wordsTriggered.current = true;
       setLockedOpener(parsed.opener);
       setLockedIntro(parsed.intro || "I'm Charon, your creative director. Let's build something extraordinary.");
       setPhase('words');
-    }
-    else {
+    } else {
       return; // not ready yet
     }
 
@@ -235,37 +232,28 @@ export default function LaunchSequence({ imagePreview, firstAgentText, openingDa
         clearTimeout(introTimerRef.current);
       }
     };
-  }, [openingData, firstAgentText, parsed.opener]);
+  }, [firstAgentText, parsed.opener, phase]);
 
-  // Phase 3: Once in 'intro' phase, poll for audio completion.
-  // Transitions to studio only after agent finishes speaking.
+  // Phase 3: Once in 'intro' phase, wait for backend turn-complete + audio drain.
+  // Two conditions: firstTurnDone (agent finished speaking) AND !isPlaying (queue drained).
   useEffect(() => {
     if (phase !== 'intro') return;
 
-    // Reset per-poll tracking
-    audioWasPlaying.current = false;
+    // Hard cap: 15s safety net in case agent_turn_complete never arrives
+    const hardTimeout = setTimeout(() => {
+      if (!completeFired.current) triggerTransitionAndComplete();
+    }, 15000);
 
-    // Give audio up to 1.5s to start before assuming silence
-    let audioStartDeadline = Date.now() + 1500;
-
-    const poll = setInterval(() => {
-      const isPlaying = getIsAudioPlaying?.() ?? false;
-      if (isPlaying) {
-        audioWasPlaying.current = true;
-        audioStartDeadline = Infinity; // audio arrived, no deadline
-      } else if (audioWasPlaying.current) {
-        // Audio was playing and has now finished — go to studio
-        clearInterval(poll);
+    if (firstTurnDone && !isPlaying) {
+      // Both met — small grace period for last chunk, then transition
+      const t = setTimeout(() => {
         if (!completeFired.current) triggerTransitionAndComplete();
-      } else if (Date.now() > audioStartDeadline) {
-        // Audio never arrived within deadline — proceed anyway
-        clearInterval(poll);
-        if (!completeFired.current) triggerTransitionAndComplete();
-      }
-    }, 150);
+      }, 500);
+      return () => { clearTimeout(t); clearTimeout(hardTimeout); };
+    }
 
-    return () => clearInterval(poll);
-  }, [phase, getIsAudioPlaying, triggerTransitionAndComplete]);
+    return () => clearTimeout(hardTimeout);
+  }, [phase, firstTurnDone, isPlaying, triggerTransitionAndComplete]);
 
   // Fallback: if nothing triggered words after 7s, use whatever text we have or skip
   useEffect(() => {
@@ -308,6 +296,7 @@ export default function LaunchSequence({ imagePreview, firstAgentText, openingDa
       position: 'fixed', inset: 0, zIndex: 100,
       display: 'flex', flexDirection: 'column',
       alignItems: 'center', justifyContent: 'center',
+      background: raw.ink, // instant cover — prevents UploadStage from bleeding through
     }}>
       {/* Dark overlay — dims the entire screen */}
       <div style={{

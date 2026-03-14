@@ -13,7 +13,7 @@ from services import brand_state
 from services.pregen import PreGenerator
 from services.text_parser import parse_agent_text
 from services.tool_executor import ToolExecutor
-from routes.ws_helpers import send_json, _store_event_on_session, _flush_and_emit
+from routes.ws_helpers import send_json, _store_event_on_session, _flush_and_emit, _wait_and_nudge
 from routes.ws_dispatch import _dispatch_next_step
 
 logger = logging.getLogger("brand-agent")
@@ -191,13 +191,11 @@ async def agent_loop(
                                     f"[{session.id}] Action: auto_nudge_analysis_speech | "
                                     f"Turn: {turn_count}"
                                 )
-                                await live_session.send_client_content(
-                                    turns=[types.Content(
-                                        role="user",
-                                        parts=[types.Part.from_text(text=nudge)],
-                                    )],
-                                    turn_complete=True,
-                                )
+                                asyncio.create_task(_wait_and_nudge(
+                                    session, live_session, nudge,
+                                    label="analysis_speech_nudge",
+                                    timeout=15.0,
+                                ))
 
                                 # Parallel: pre-generate name proposals via text model
                                 async def _pregen_names(_ws=ws, _session=session):

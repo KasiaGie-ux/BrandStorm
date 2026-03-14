@@ -23,13 +23,11 @@ export default function App() {
   const [wsStatus, setWsStatus] = useState('disconnected');
   const [imagePreview, setImagePreview] = useState(null);
   const [firstAgentText, setFirstAgentText] = useState(null);
-  const [openingData, setOpeningData] = useState(null); // { words: [...], intro: "..." }
+  const [firstTurnDone, setFirstTurnDone] = useState(false);
   const launchTextRef = useRef('');
-  const launchIntroRef = useRef(null); // { opener, intro } — exact text shown in LaunchSequence
+  const launchIntroRef = useRef(null); // { opener, intro } — used by stripKnownIntro
   const imageFileRef = useRef(null);
   const contextTextRef = useRef('');
-  const firstTextCaptured = useRef(false);
-  const openingReceived = useRef(false);
   const generationTimeoutRef = useRef(null);
   const messagesRef = useRef([]);
   const pendingResumeRef = useRef(null);
@@ -217,22 +215,6 @@ export default function App() {
         addMessage({ type: 'agent_text', text: 'Connection was lost. Your session could not be resumed — please start over if generation stalled.' });
         break;
 
-      case 'opening_sequence':
-        // Reliable text from backend text-model call (parallel to Live API audio).
-        // This is the definitive source for LaunchSequence display.
-        if (!openingReceived.current && event.words?.length >= 2) {
-          openingReceived.current = true;
-          firstTextCaptured.current = true; // stop accumulating transcription
-          setOpeningData({ words: event.words, intro: event.intro || '' });
-          // Also set firstAgentText so LaunchSequence triggers
-          const wordsStr = event.words.map(w => w + '.').join(' ');
-          setFirstAgentText(wordsStr + '\n' + (event.intro || ''));
-          // Store exact opener+intro for use as a chat filter (prevents them leaking
-          // into the chat from subsequent turns where the agent repeats the intro).
-          launchIntroRef.current = { opener: wordsStr, intro: event.intro || '' };
-        }
-        break;
-
       case 'agent_text': {
         const isFirstTurn = !messagesRef.current.some(m => m.type === 'agent_turn_complete');
 
@@ -259,15 +241,14 @@ export default function App() {
               (/[a-z]$/.test(prev_text) && /^[A-Z]/.test(event.text))
             );
             launchTextRef.current = prev_text + (needs_space ? ' ' : '') + event.text;
-          } else {
+          } else if (!launchTextRef.current) {
+            // No partials received — use final text as fallback
             launchTextRef.current = event.text;
           }
+          // else: partial:false AFTER partials — skip, accumulated text is correct
+          // (raw Gemini text has spacing artifacts like "L uminous" that break parsing)
           const acc = launchTextRef.current;
-          // Stop updating firstAgentText once opening_sequence has provided the
-          // authoritative text (firstTextCaptured = true). This prevents the
-          // LaunchSequence useEffect cleanup from clearing the intro timer every
-          // time a new partial arrives — which would prevent the intro from ever showing.
-          if (!firstTextCaptured.current && acc.trim()) setFirstAgentText(acc);
+          if (acc.trim()) setFirstAgentText(acc);
           break; // first turn never goes to chat
         }
 
@@ -326,6 +307,13 @@ export default function App() {
 
       case 'agent_turn_complete':
         if (event.phase) setPhase(event.phase);
+        if (!messagesRef.current.some(m => m.type === 'agent_turn_complete')) {
+          setFirstTurnDone(true);
+          // Store first-turn text for stripKnownIntro (prevents opener leaking into chat)
+          if (launchTextRef.current) {
+            launchIntroRef.current = { opener: launchTextRef.current, intro: '' };
+          }
+        }
         addMessage({ type: 'agent_turn_complete' });
         turnActiveRef.current = false;
         eventQueue.onTurnComplete();
@@ -604,9 +592,7 @@ export default function App() {
     setPhase('INIT');
     setBrandKit(null);
     setFirstAgentText(null);
-    setOpeningData(null);
-    openingReceived.current = false;
-    firstTextCaptured.current = false;
+    setFirstTurnDone(false);
     launchTextRef.current = '';
     launchIntroRef.current = null;
     window._voiceoverHandoffDone = false;
@@ -638,9 +624,6 @@ export default function App() {
   }, [ws, addMessage]);
 
   const handleLaunchComplete = useCallback(() => {
-    // Ensure we stop accumulating launch text
-    firstTextCaptured.current = true;
-
     setScreen(SCREENS.STUDIO);
   }, []);
 
@@ -680,9 +663,7 @@ export default function App() {
     pendingResultsRef.current = false;
     setImagePreview(null);
     setFirstAgentText(null);
-    setOpeningData(null);
-    openingReceived.current = false;
-    firstTextCaptured.current = false;
+    setFirstTurnDone(false);
     launchTextRef.current = '';
     launchIntroRef.current = null;
   }, [ws]);
@@ -746,9 +727,9 @@ export default function App() {
           <LaunchSequence
             imagePreview={imagePreview}
             firstAgentText={firstAgentText}
-            openingData={openingData}
             onComplete={handleLaunchComplete}
-            getIsAudioPlaying={audioPlayback.getIsPlaying}
+            firstTurnDone={firstTurnDone}
+            isPlaying={audioPlayback.isPlaying}
           />
         )}
       </AnimatePresence>

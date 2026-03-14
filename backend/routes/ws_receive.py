@@ -316,57 +316,6 @@ async def receive_loop(
                 if user_context:
                     prompt += f"\n\nAdditional context from the client: {user_context}"
 
-                # Parallel text call for LaunchSequence display
-                async def _opening_text_call(
-                    _ws=ws, _session=session,
-                    _image_bytes=image_bytes, _mime_type=mime_type,
-                ):
-                    try:
-                        from services.gemini_live import create_client as _cc
-                        _tc = _cc()
-                        _opening_prompt = (
-                            "You are Brand Architect, an elite creative director. "
-                            "Look at this product photo and respond with EXACTLY this JSON:\n"
-                            '{"words": ["Word1", "Word2", "Word3"], '
-                            '"intro": "I\'m Charon, your creative director. ...(one sentence)..."}\n'
-                            "Rules:\n"
-                            "- words: EXACTLY 3 dramatic single-word adjectives describing the product\n"
-                            "- intro: ONE sentence introducing yourself as Charon. Confident and warm.\n"
-                            "Respond with ONLY the JSON. No markdown, no backticks."
-                        )
-                        _img_part = types.Part.from_bytes(
-                            data=_image_bytes, mime_type=_mime_type,
-                        )
-                        _resp = await _tc.aio.models.generate_content(
-                            model="gemini-2.5-flash",
-                            contents=[_img_part, _opening_prompt],
-                            config=types.GenerateContentConfig(
-                                response_mime_type="application/json",
-                            ),
-                        )
-                        _text = _resp.text.strip()
-                        if _text.startswith("```"):
-                            _text = _text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-                        _data = json.loads(_text)
-                        _words = _data.get("words", [])
-                        _intro = _data.get("intro", "")
-                        if len(_words) >= 2 and _intro:
-                            await send_json(_ws, {
-                                "type": "opening_sequence",
-                                "words": _words[:3],
-                                "intro": _intro,
-                            })
-                            logger.info(
-                                f"[{_session.id}] Action: opening_text_ready | "
-                                f"Words: {_words[:3]} | Intro: {_intro[:60]}"
-                            )
-                    except Exception as e:
-                        logger.warning(
-                            f"[{_session.id}] Action: opening_text_failed | Error: {e}"
-                        )
-
-                asyncio.create_task(_opening_text_call(), name="opening-text")
-
                 logger.info(
                     f"[{session.id}] Action: sending_image_to_live_api | "
                     f"Size: {len(image_bytes)} bytes | Prompt: {prompt[:80]}"
