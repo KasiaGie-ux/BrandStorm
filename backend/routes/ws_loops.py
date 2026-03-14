@@ -52,7 +52,13 @@ def _store_event_on_session(
             session.font_suggestion = None
             session.logo_image_bytes = None
             session.audio_url = None
+            session.tagline = None
+            session.brand_story = None
+            session.brand_values = None
+            session.tone_of_voice = None
+            session.voiceover_sent = False
             session.auto_continue_count = 0
+            session._pregen_names_sent = False
         # Fire (or restart) the pre-generation pipeline
         if pregen:
             pregen.start(session)
@@ -267,36 +273,41 @@ async def receive_loop(
                             logger.info(f"[{session.id}] Action: zip_cleared_for_regen")
                         logger.info(f"[{session.id}] Action: feedback_gate_cleared | Text: {text[:40]}")
 
-                    # --- Detect feedback type and set pending_regen ---
-                    # This tells auto-continue to back off until the agent
-                    # actually executes the corrective tool call.
-                    _feedback_keywords = {
-                        "tagline": ["tagline", "slogan", "haslo", "hasło", "motto"],
-                        "logo": ["logo", "logotyp", "znak"],
-                        "palette": ["color", "colour", "palette", "kolor", "paleta", "darker", "lighter", "ciemn", "jasn"],
-                        "fonts": ["font", "czcionk", "typograph", "heading", "nagłów"],
-                        "hero_lifestyle": ["hero", "lifestyle", "zdjęcie", "zdj"],
-                        "instagram_post": ["instagram", "insta", "post"],
-                        "name": ["name", "nazwa", "rename", "zmień nazw"],
+                    # --- Detect feedback: block dispatch until agent handles it ---
+                    # Only block dispatch when we're in a post-flow phase (agent already
+                    # presented something) AND the user is NOT choosing a name or doing
+                    # normal flow progression. This prevents locking up the dispatch during
+                    # early flow steps like name selection.
+                    # Block dispatch during ALL active phases — same set as audio barge-in.
+                    # Rule F: text and voice must have identical dispatch-blocking effect.
+                    _feedback_phases = {
+                        AgentPhase.AWAITING_INPUT,
+                        AgentPhase.COMPLETE,
+                        AgentPhase.REFINING,
+                        AgentPhase.GENERATING,
+                        AgentPhase.ANALYSIS_SPEECH,
+                        AgentPhase.AWAITING_NAME,
+                        AgentPhase.REVEAL_SPEECH,
+                        AgentPhase.REVEAL_TOOL,
+                        AgentPhase.PALETTE_SPEECH,
+                        AgentPhase.PALETTE_TOOL,
+                        AgentPhase.FONTS_SPEECH,
+                        AgentPhase.FONTS_TOOL,
+                        AgentPhase.IMAGE_SPEECH,
+                        AgentPhase.IMAGE_TOOL,
+                        AgentPhase.VOICEOVER_SPEECH,
+                        AgentPhase.VOICEOVER_TOOL,
                     }
-                    if (not session.pending_regen
-                            and not session.awaiting_feedback
+                    if (not session.awaiting_feedback
                             and session.brand_name
+                            and session.phase in _feedback_phases
                             and not any(s in _lower for s in _pos_signals)):
-                        for target, kws in _feedback_keywords.items():
-                            if any(kw in _lower for kw in kws):
-                                session.pending_regen = True
-                                session.pending_regen_target = target
-                                session.awaiting_feedback = True
-                                logger.info(
-                                    f"[{session.id}] Action: feedback_detected | "
-                                    f"Target: {target} | Text: {text[:60]}"
-                                )
-                                break
+                        session.awaiting_feedback = True
+                        logger.info(
+                            f"[{session.id}] Action: feedback_gate_set | Text: {text[:60]}"
+                        )
 
-                    # --- Detect delegation signals ---
-                    # User says "decide" / "zdecyduj" / "you choose" = let agent decide.
-                    # If pending_regen is set, agent must execute the fix NOW.
+                    # --- Delegation signals ---
                     _delegation_signals = [
                         "decide", "zdecyduj", "you choose", "ty zdecyduj",
                         "sam zdecyduj", "your call", "up to you",
@@ -305,8 +316,6 @@ async def receive_loop(
                     _is_delegation = any(s in _lower for s in _delegation_signals)
 
                     # --- User just chose a name → agent must speak comment, no tools ---
-                    # Applies when brand_name is set but tagline isn't yet (post-name-choice),
-                    # and the phase is AWAITING_NAME / AWAITING_INPUT / PROPOSING.
                     _name_chosen_phases = {
                         AgentPhase.AWAITING_NAME,
                         AgentPhase.AWAITING_INPUT,
@@ -328,15 +337,13 @@ async def receive_loop(
                             f"Just speak your comment, then STOP."
                         )
 
-                    # During active brand flow (any phase after full brand exists),
-                    # wrap user text so agent classifies feedback properly
+                    # During active brand flow, wrap with session context
                     elif session.phase in {
                         AgentPhase.AWAITING_INPUT,
                         AgentPhase.COMPLETE,
                         AgentPhase.REFINING,
                         AgentPhase.GENERATING,
                     } and session.brand_name:
-                        # Build context about what exists
                         _done = ", ".join(session.completed_assets) if session.completed_assets else "none"
                         _has_palette = "yes" if session.palette else "no"
                         _has_fonts = "yes" if session.font_suggestion else "no"
@@ -346,49 +353,18 @@ async def receive_loop(
                             f"completed_assets=[{_done}], palette={_has_palette}, "
                             f"fonts={_has_fonts}, finalized={_is_finalized}]"
                         )
-
-                        if _is_delegation and session.pending_regen:
-                            # User delegated the decision — agent must fix NOW
-                            _target = session.pending_regen_target or "the thing they complained about"
-                            _tool_map = {
-                                "tagline": "reveal_brand_identity with a NEW, DIFFERENT tagline (keep name, story, values unchanged)",
-                                "logo": "generate_image with asset_type 'logo' and a COMPLETELY DIFFERENT prompt",
-                                "palette": "generate_palette with DIFFERENT colors",
-                                "fonts": "suggest_fonts with DIFFERENT font pairing",
-                                "hero_lifestyle": "generate_image with asset_type 'hero_lifestyle' and a new prompt",
-                                "instagram_post": "generate_image with asset_type 'instagram_post' and a new prompt",
-                                "name": "propose_names with 3 new names",
-                            }
-                            _tool_hint = _tool_map.get(_target, f"the appropriate tool to fix {_target}")
+                        if _is_delegation:
                             wrapped = (
                                 f"USER INPUT: {text}\n{_ctx}\n"
-                                f"The user wants YOU to decide. They previously asked to change the {_target}. "
-                                f"You MUST call {_tool_hint} RIGHT NOW with your own creative choice. "
-                                f"Do NOT ask more questions. Do NOT skip ahead to palette/fonts/images. "
-                                f"Fix the {_target} FIRST, then STOP and ask if they like it."
-                            )
-                        elif session.awaiting_feedback:
-                            # Still in feedback loop — responding to a regen
-                            wrapped = (
-                                f"USER INPUT: {text}\n{_ctx}\n"
-                                "The user is responding to a regenerated asset. "
-                                "If positive → acknowledge briefly, then continue. "
-                                "If the regenerated asset was the LOGO and user approves it, "
-                                "you MUST also regenerate hero_lifestyle and instagram_post "
-                                "since they contain the old logo. Announce this and do it. "
-                                "If still negative → fix ONLY that specific thing again. "
-                                "ASK if they like the new version."
+                                f"The user wants you to decide. Make your own creative choice and act on it. "
+                                f"Do NOT ask more questions."
                             )
                         else:
-                            # Agent should ONLY speak — acknowledge what changed and why.
-                            # The pending_regen_nudge in turn_complete fires the actual tool call.
-                            # This prevents the speech+tool combined turn that cuts off audio.
                             wrapped = (
                                 f"USER INPUT: {text}\n{_ctx}\n"
-                                "The user has feedback. Acknowledge it briefly (1-2 sentences). "
-                                "Say what you'll change and why. "
-                                "CRITICAL: Do NOT call any tools. Just speak, then STOP. "
-                                "The system will trigger the correct tool automatically."
+                                "Understand what the user wants and respond appropriately. "
+                                "If they dislike something, ask a clarifying question before changing it. "
+                                "If they give a clear direct instruction, act on it."
                             )
                     else:
                         wrapped = text
@@ -647,6 +623,29 @@ async def _dispatch_next_step(
             f"REVEAL_TOOL nudge already in-flight from user-input path"
         )
 
+    # ── AWAITING_NAME, no brand chosen yet → agent said it will propose new names ─
+    # Happens after user rejects proposals: agent acknowledges, then needs a nudge
+    # to actually call propose_names (it said "I'll try fresh names" but won't act).
+    # Skip if agent JUST narrated names (_names_narrated=True) — cards are showing,
+    # user just needs to pick. Nudging again would cause double propose_names call.
+    elif phase == AgentPhase.AWAITING_NAME and not session.brand_name:
+        if getattr(session, "_names_narrated", False):
+            # Names were narrated this turn — cards visible, waiting for user pick.
+            # Reset flag so next rejection cycle can trigger a retry.
+            session._names_narrated = False
+            logger.info(f"[{session.id}] Action: dispatch_skip_names_narrated | Turn: {turn_count} | Waiting for user choice")
+        else:
+            session.auto_continue_count += 1
+            # Clear stale pregen names so old proposals don't re-appear
+            if hasattr(session, "_pregen_names"):
+                session._pregen_names = None
+            nudge = (
+                "Call propose_names now with 3 fresh brand name options. "
+                "Do NOT speak first. Just call the tool immediately."
+            )
+            logger.info(f"[{session.id}] Action: dispatch_propose_names_retry | Turn: {turn_count}")
+            asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "propose_names_retry"))
+
     # ── REVEAL_SPEECH done → call reveal_brand_identity ──────────────────────
     elif phase == AgentPhase.REVEAL_SPEECH:
         brand_state.transition_phase(session, AgentPhase.REVEAL_TOOL)
@@ -869,11 +868,27 @@ async def agent_loop(
                     # Server content: audio, text, transcription
                     if message.server_content:
                         sc = message.server_content
+
+                        # Native barge-in: Live API stopped generating because user spoke.
+                        # Tell frontend to flush audio queue immediately.
+                        # Do NOT set awaiting_feedback here — that would block dispatch
+                        # indefinitely because there is no corresponding agent turn_complete
+                        # that clears it. VAD handles the turn transition on the Live API
+                        # side; the next user speech will arrive as a normal turn.
+                        if getattr(sc, "interrupted", False):
+                            logger.info(
+                                f"[{session.id}] Action: barge_in_interrupted | "
+                                f"Phase: {session.phase.value} | Native Live API barge-in"
+                            )
+                            await send_json(ws, {"type": "agent_audio_interrupted"})
+                            agent_text_buffer.clear()
+                            break
+
                         if sc.model_turn and sc.model_turn.parts:
                             for part in sc.model_turn.parts:
                                 if part.inline_data and part.inline_data.mime_type.startswith("audio/"):
-                                    # Suppress agent audio while Anna is narrating or interrupt active
-                                    if session.voiceover_playing or session.interrupt_text:
+                                    # Suppress agent audio ONLY while Anna is narrating
+                                    if session.voiceover_playing:
                                         logger.info(
                                             f"[{session.id}] Action: suppress_audio_during_voiceover"
                                         )
@@ -895,9 +910,23 @@ async def agent_loop(
                         # message — the turn_complete flush sends partial=False with the
                         # full buffer, so emitting a partial here first would cause the
                         # frontend to see the last sentence twice.
+                        # input_transcription: what the user said via voice.
+                        # Send as user bubble so it appears in chat.
+                        if getattr(sc, "input_transcription", None) and sc.input_transcription.text:
+                            user_speech_text = sc.input_transcription.text.strip()
+                            if user_speech_text:
+                                logger.info(
+                                    f"[{session.id}] Action: user_voice_transcription | "
+                                    f"Text: {user_speech_text[:80]}"
+                                )
+                                session.add_transcript("user", user_speech_text)
+                                await send_json(ws, {
+                                    "type": "user_voice_text",
+                                    "text": user_speech_text,
+                                })
+
                         if (sc.output_transcription and sc.output_transcription.text
-                                and not session.voiceover_playing
-                                and not session.interrupt_text):
+                                and not session.voiceover_playing):
                             text = sc.output_transcription.text
                             agent_text_buffer.append(text)
                             if not sc.turn_complete:
@@ -956,6 +985,8 @@ async def agent_loop(
                                     "text": "",
                                     "partial": False,
                                 })
+                            # Clear audio barge-in flag — agent has processed the input
+                            session.user_speaking = False
                             agent_text_buffer.clear()
 
                             if session.phase == AgentPhase.ANALYZING:
@@ -1047,6 +1078,9 @@ async def agent_loop(
                                             })
                                             # Store on session so _dispatch_next_step can use them
                                             _session._pregen_names = validated
+                                            # Mark as sent — early_event in tool call handler
+                                            # will skip to avoid showing a second set of cards.
+                                            _session._pregen_names_sent = True
                                             logger.info(
                                                 f"[{_session.id}] Action: pregen_names_sent | "
                                                 f"Names: {[n['name'] for n in validated]}"
@@ -1071,6 +1105,17 @@ async def agent_loop(
                                     and not session.tagline
                                     and full_text.strip()):
                                 brand_state.transition_phase(session, AgentPhase.REVEAL_TOOL)
+                            # Agent narrated names after propose_names — mark as done so
+                            # dispatch_propose_names_retry does NOT fire again.
+                            elif (session.phase == AgentPhase.AWAITING_NAME
+                                    and not session.brand_name
+                                    and not _tool_called_this_turn
+                                    and full_text.strip()):
+                                session._names_narrated = True
+                                logger.info(
+                                    f"[{session.id}] Action: names_narrated | "
+                                    f"Turn: {turn_count} | Will wait for user choice"
+                                )
 
                             logger.info(f"[{session.id}] Action: turn_complete | Turn: {turn_count} | Msgs: {msg_count}")
                             await send_json(ws, {
@@ -1078,49 +1123,40 @@ async def agent_loop(
                                 "phase": session.phase.value,
                             })
 
-                            # --- Pending-regen nudge (user asked to change something) ---
-                            if (session.pending_regen
-                                    and session.phase == AgentPhase.AWAITING_INPUT
-                                    and session.auto_continue_count < 3
-                                    and _pending_tool_bg[0] == 0):
-                                _target = session.pending_regen_target or "the asset"
-                                _tool_map = {
-                                    "tagline": "reveal_brand_identity with a NEW tagline (keep name, story, values)",
-                                    "logo": "generate_image with asset_type 'logo' and a COMPLETELY DIFFERENT prompt",
-                                    "palette": "generate_palette with DIFFERENT colors",
-                                    "fonts": "suggest_fonts with a DIFFERENT font pairing",
-                                    "hero_lifestyle": "generate_image with asset_type 'hero_lifestyle' and a new prompt",
-                                    "instagram_post": "generate_image with asset_type 'instagram_post' and a new prompt",
-                                    "name": "propose_names with 3 new names",
-                                }
-                                _tool_hint = _tool_map.get(_target, f"the appropriate tool to change {_target}")
-                                session.auto_continue_count += 1
-                                regen_nudge = (
-                                    f"You MUST call {_tool_hint} NOW. "
-                                    f"The user asked you to change the {_target}. "
-                                    f"Do NOT talk about it — just call the tool with your creative choice. "
-                                    f"Do NOT skip ahead to palette, fonts, or images. Fix the {_target} FIRST."
-                                )
-                                logger.info(
-                                    f"[{session.id}] Action: pending_regen_nudge | "
-                                    f"Target: {_target} | Attempt: {session.auto_continue_count}"
-                                )
-                                brand_state.transition_phase(session, AgentPhase.GENERATING)
-                                await live_session.send_client_content(
-                                    turns=[types.Content(
-                                        role="user",
-                                        parts=[types.Part.from_text(text=regen_nudge)],
-                                    )],
-                                    turn_complete=True,
-                                )
-                                break
+                            # Agent responded — clear the feedback gate so dispatch can resume.
+                            # Exception: keep gate if agent called a tool this turn (tool handler
+                            # advances flow directly without needing dispatch).
+                            _was_awaiting_feedback = session.awaiting_feedback
+                            if full_text.strip() and not _tool_called_this_turn:
+                                if session.awaiting_feedback:
+                                    session.awaiting_feedback = False
+                                    logger.info(
+                                        f"[{session.id}] Action: feedback_gate_cleared_by_agent | "
+                                        f"Phase: {session.phase.value}"
+                                    )
+                                session.user_speaking = False
 
                             # State-machine dispatch — speech and tool turns are always separate.
-                            # Skip dispatch on empty turns: agent acknowledged a nudge without
-                            # speaking. _wait_and_nudge already has the next nudge scheduled —
-                            # dispatching again here would send a duplicate nudge.
-                            if full_text.strip():
+                            # After feedback in late phases (AWAITING_INPUT/GENERATING/COMPLETE),
+                            # skip dispatch — agent already has context and will self-initiate.
+                            # In early phases (AWAITING_NAME, PROPOSING, micro-phases), always
+                            # dispatch — agent needs nudge to call the next tool.
+                            _late_phases = {
+                                AgentPhase.AWAITING_INPUT, AgentPhase.GENERATING,
+                                AgentPhase.REFINING, AgentPhase.COMPLETE,
+                            }
+                            _skip_dispatch_after_feedback = (
+                                _was_awaiting_feedback
+                                and not _tool_called_this_turn
+                                and session.phase in _late_phases
+                            )
+                            if full_text.strip() and not _skip_dispatch_after_feedback:
                                 await _dispatch_next_step(session, live_session, ws, turn_count, _pending_tool_bg)
+                            elif _skip_dispatch_after_feedback and full_text.strip():
+                                logger.info(
+                                    f"[{session.id}] Action: dispatch_skipped_after_feedback | "
+                                    f"Phase: {session.phase.value} | Late phase — agent self-initiates"
+                                )
 
                             break
 
@@ -1149,29 +1185,38 @@ async def agent_loop(
                             # for background task. Cards reach frontend while analysis
                             # audio is still playing (tool call fires right after speech).
                             if fc.name == "propose_names":
-                                args_dict = dict(fc.args) if fc.args else {}
-                                raw_names = args_dict.get("names", [])
-                                validated = []
-                                for i, n in enumerate(raw_names[:3]):
-                                    if isinstance(n, dict) and n.get("name"):
-                                        entry = {
-                                            "id": i + 1,
-                                            "name": n["name"],
-                                            "rationale": n.get("rationale", ""),
+                                # If pregen names were already sent to frontend during analysis
+                                # audio, skip early event to avoid showing a second set of cards.
+                                _has_pregen = getattr(session, "_pregen_names_sent", False)
+                                if not _has_pregen:
+                                    args_dict = dict(fc.args) if fc.args else {}
+                                    raw_names = args_dict.get("names", [])
+                                    validated = []
+                                    for i, n in enumerate(raw_names[:3]):
+                                        if isinstance(n, dict) and n.get("name"):
+                                            entry = {
+                                                "id": i + 1,
+                                                "name": n["name"],
+                                                "rationale": n.get("rationale", ""),
+                                            }
+                                            if n.get("recommended"):
+                                                entry["recommended"] = True
+                                            validated.append(entry)
+                                    if validated:
+                                        early_event = {
+                                            "type": "name_proposals",
+                                            "names": validated,
+                                            "auto_select_seconds": 8,
                                         }
-                                        if n.get("recommended"):
-                                            entry["recommended"] = True
-                                        validated.append(entry)
-                                if validated:
-                                    early_event = {
-                                        "type": "name_proposals",
-                                        "names": validated,
-                                        "auto_select_seconds": 8,
-                                    }
-                                    await send_json(ws, early_event)
+                                        await send_json(ws, early_event)
+                                        logger.info(
+                                            f"[{session.id}] Action: name_proposals_early | "
+                                            f"Names: {[n['name'] for n in validated]}"
+                                        )
+                                else:
                                     logger.info(
-                                        f"[{session.id}] Action: name_proposals_early | "
-                                        f"Names: {[n['name'] for n in validated]}"
+                                        f"[{session.id}] Action: name_proposals_early_skip | "
+                                        f"Pregen already sent — skipping agent names"
                                     )
 
                             # Set voiceover flag immediately to prevent
@@ -1278,6 +1323,13 @@ async def agent_loop(
                                     # _dispatch_next_step knows which step comes next.
                                     if _fc.name == "propose_names":
                                         brand_state.transition_phase(session, AgentPhase.AWAITING_NAME)
+                                        # Flag: agent will now speak to narrate these names.
+                                        # After narration turn_complete, skip dispatch_propose_names_retry
+                                        # (names were already proposed — no need for another nudge).
+                                        session._names_narrated = False
+                                        # Reset pregen_sent so retry propose_names (after rejection)
+                                        # can send its own early_event normally.
+                                        session._pregen_names_sent = False
                                     elif _fc.name == "reveal_brand_identity":
                                         brand_state.transition_phase(session, AgentPhase.REVEAL_TOOL)
                                     elif _fc.name == "generate_palette":
@@ -1344,17 +1396,27 @@ async def agent_loop(
                                         # and cause the REVEAL_SPEECH text to appear twice.
                                         _skip_dispatch = (
                                             _fc.name == "propose_names"
-                                            and session.brand_name
-                                            and session.phase in (
-                                                AgentPhase.REVEAL_TOOL,
-                                                AgentPhase.REVEAL_SPEECH,
+                                            and (
+                                                # Brand already chosen — REVEAL nudge already in-flight
+                                                (
+                                                    session.brand_name
+                                                    and session.phase in (
+                                                        AgentPhase.REVEAL_TOOL,
+                                                        AgentPhase.REVEAL_SPEECH,
+                                                    )
+                                                )
+                                                # No brand yet — turn_complete will handle retry dispatch
+                                                or (
+                                                    not session.brand_name
+                                                    and session.phase == AgentPhase.AWAITING_NAME
+                                                )
                                             )
                                         )
                                         if _skip_dispatch:
                                             logger.info(
                                                 f"[{session.id}] Action: dispatch_skip_after_propose | "
                                                 f"Phase: {session.phase.value} | "
-                                                f"Brand already chosen: {session.brand_name}"
+                                                f"Brand already chosen: {bool(session.brand_name)}"
                                             )
                                         else:
                                             logger.info(
@@ -1395,6 +1457,7 @@ async def agent_loop(
                                     f"Stopping auto-continue, waiting for user"
                                 )
                                 session.interrupt_text = None
+                                session.user_speaking = False
                                 brand_state.transition_phase(session, AgentPhase.AWAITING_INPUT)
                                 await send_json(ws, {
                                     "type": "agent_turn_complete",

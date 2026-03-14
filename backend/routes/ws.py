@@ -30,6 +30,9 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
     logger.info(f"[{session_id}] Phase: INIT | Action: websocket_connected")
 
     session = brand_state.create_session(session_id)
+    # Prevent duplicate Live API streams: if this session_id has an active
+    # connection, signal it to close before opening a new one.
+    stop_event = brand_state.register_teardown_event(session_id)
     client = create_client()
     storage = StorageService()
     image_gen = ImageGenerator(client)
@@ -82,8 +85,18 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
                 name="keepalive",
             )
 
+            async def _stop_watcher():
+                """Exit when superseded by a new connection for this session_id."""
+                await stop_event.wait()
+                logger.info(
+                    f"[{session_id}] Action: connection_superseded | "
+                    f"Closing Live API session (new connection took over)"
+                )
+
+            stop_task = asyncio.create_task(_stop_watcher(), name="stop_watcher")
+
             done, pending = await asyncio.wait(
-                [receive_task, agent_task],
+                [receive_task, agent_task, stop_task],
                 return_when=asyncio.FIRST_COMPLETED,
             )
             keepalive_task.cancel()
@@ -119,5 +132,6 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
             if not task.done():
                 task.cancel()
                 logger.info(f"[{session_id}] Action: cancelled_pregen_task | Task: {task_name}")
+        brand_state.clear_teardown_event(session_id)
         brand_state.remove_session(session_id)
         logger.info(f"[{session_id}] Action: session_ended")

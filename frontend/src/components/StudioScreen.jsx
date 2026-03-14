@@ -22,10 +22,18 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
   const [showOverlay, setShowOverlay] = useState(false);
   const [imageOverlay, setImageOverlay] = useState(null);
 
-  // Mic input — sends PCM chunks to backend as audio_chunk events
+  // Stable ref so onaudioprocess closure always reads the latest getIsPlaying
+  // without causing useAudioInput to recreate its processor on every render.
+  const getIsPlayingRef = useRef(null);
+  getIsPlayingRef.current = audioPlayback?.getIsPlaying ?? null;
+
+  // Mic input — sends PCM chunks to backend as audio_chunk events.
+  // Gate: drop chunks while agent is playing audio to prevent echo feedback loop
+  // (mic captures speaker output → Live API hears its own voice → "multiple agents" effect).
   const handleAudioChunk = useCallback((base64Data) => {
+    if (getIsPlayingRef.current?.()) return;
     sendMessage({ type: 'audio_chunk', data: base64Data });
-  }, [sendMessage]);
+  }, [sendMessage]); // no audioPlayback dep — read via ref to keep closure stable
 
   const audioInput = useAudioInput({
     onChunk: handleAudioChunk,
@@ -164,6 +172,11 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
     && messages.slice(lastProposalMsgIdx + 1).some(m => m.type === 'agent_turn_complete');
   const agentAudioPlaying = audioPlayback?.isPlaying ?? false;
 
+  // Freeze countdown when user has reacted (sent any message after proposals appeared).
+  // This covers both "I don't like those names" and voice feedback cases.
+  const proposalsFrozen = lastProposalMsgIdx !== -1
+    && messages.slice(lastProposalMsgIdx + 1).some(m => m.type === 'user');
+
   const [nameNarrationDone, setNameNarrationDone] = useState(false);
   const lastProposalIdxRef = useRef(-1);
 
@@ -301,6 +314,7 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
                 tagline={tagline}
                 onVoiceoverEnd={onVoiceoverEnd}
                 nameNarrationDone={nameNarrationDone}
+                proposalsFrozen={proposalsFrozen}
               />
             );
           })}

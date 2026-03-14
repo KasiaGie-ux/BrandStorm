@@ -84,13 +84,13 @@ export default function useAudioInput({ onChunk, onSilenceTimeout }) {
       sourceRef.current = source;
 
       // ScriptProcessorNode with 4096 buffer (~93ms at 44.1kHz)
-      // We accumulate ~3 buffers before sending (~250ms)
+      // Send every ~20ms per Live API best practices (20-40ms chunks recommended)
       const processor = ctx.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
 
       let accumulatedChunks = [];
       let accumulatedLength = 0;
-      const TARGET_CHUNK_SAMPLES = Math.floor(TARGET_SAMPLE_RATE * 0.25); // ~250ms
+      const TARGET_CHUNK_SAMPLES = Math.floor(TARGET_SAMPLE_RATE * 0.02); // ~20ms
 
       processor.onaudioprocess = (e) => {
         if (!recordingRef.current) return;

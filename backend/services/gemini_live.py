@@ -282,11 +282,22 @@ def build_live_config() -> types.LiveConnectConfig:
             parts=[types.Part.from_text(text=SYSTEM_PROMPT)]
         ),
         output_audio_transcription=types.AudioTranscriptionConfig(),
+        input_audio_transcription=types.AudioTranscriptionConfig(),
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
                     voice_name=LIVE_API_VOICE,
                 )
+            ),
+            language_code="en-US",
+        ),
+        realtime_input_config=types.RealtimeInputConfig(
+            automatic_activity_detection=types.AutomaticActivityDetection(
+                disabled=False,
+                start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
+                end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
+                prefix_padding_ms=20,
+                silence_duration_ms=100,
             )
         ),
     )

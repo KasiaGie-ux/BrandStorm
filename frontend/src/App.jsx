@@ -397,15 +397,23 @@ export default function App() {
         addMessage({ type: 'brand_story', story: event.story });
         break;
 
-      case 'name_proposals':
-        // Dedup: backend sends early (during audio) + tool executor may re-send
+      case 'name_proposals': {
+        // Dedup: backend sends early (during audio) + tool executor may re-send.
+        // Only skip if the LAST name_proposals already has the same names (same batch).
+        // Allow new batches through (user rejected and agent proposes fresh names).
+        const newNames = (event.names || []).map(n => n.name).sort().join(',');
         setMessages(prev => {
-          if (prev.some(m => m.type === 'name_proposals')) return prev;
+          const lastProposal = [...prev].reverse().find(m => m.type === 'name_proposals');
+          if (lastProposal) {
+            const existingNames = (lastProposal.names || []).map(n => n.name).sort().join(',');
+            if (existingNames === newNames) return prev; // same batch — skip
+          }
           const next = [...prev, { type: 'name_proposals', names: event.names, auto_select_seconds: event.auto_select_seconds || 8, _id: ++msgIdCounter.current }];
           messagesRef.current = next;
           return next;
         });
         break;
+      }
 
       case 'palette_reveal':
         if (event.colors?.length) {
@@ -447,6 +455,17 @@ export default function App() {
       case 'agent_audio_end':
         // Backend finished sending audio chunks for this turn.
         // Let the frontend queue naturally play out to completion.
+        break;
+
+      case 'agent_audio_interrupted':
+        // Live API native barge-in: user spoke, server stopped generating.
+        // Flush the audio queue immediately so agent stops mid-word.
+        audioPlayback.flush();
+        break;
+
+      case 'user_voice_text':
+        // Transcription of what the user said via microphone — show as user bubble.
+        addMessage({ type: 'user', text: event.text });
         break;
 
       case 'ping':

@@ -131,6 +131,11 @@ class Session:
     # agent_loop checks this between tool calls and relays feedback to Live API.
     interrupt_text: str | None = None
 
+    # Set True when audio_chunk arrives during active phases (audio barge-in).
+    # Separate from interrupt_text so audio/text suppression is NOT triggered.
+    # Only blocks dispatch (nudges). Cleared when agent processes the input.
+    user_speaking: bool = False
+
     # Set True after negative feedback triggers asset regeneration.
     # Blocks auto-continue so agent asks user if they like the new version.
     # Cleared when user sends positive feedback or continues.

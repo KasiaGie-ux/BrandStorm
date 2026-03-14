@@ -11,7 +11,7 @@ import { raw, fonts, easeCurve } from '../styles/tokens';
 
 export { ImageTile, ProductOverlay, ImageOverlay } from './StudioHelpers';
 
-export default function MessageBubble({ msg, sendMessage, brandName, tagline, onVoiceoverEnd, nameNarrationDone }) {
+export default function MessageBubble({ msg, sendMessage, brandName, tagline, onVoiceoverEnd, nameNarrationDone, proposalsFrozen }) {
   if (msg.type === 'agent_thinking') {
     return (
       <motion.div
@@ -92,6 +92,7 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline, on
         names={msg.names}
         autoSelectSeconds={msg.auto_select_seconds || 10}
         narrationDone={nameNarrationDone}
+        frozen={proposalsFrozen}
         onSelect={(name) => {
           if (sendMessage) sendMessage({ type: 'text_input', text: `I choose ${name}` });
         }}

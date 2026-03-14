@@ -4,6 +4,7 @@ The Live API agent drives transitions. This module only records them and
 enforces valid transitions for observability.
 """
 
+import asyncio
 import logging
 import time
 
@@ -15,6 +16,34 @@ logger = logging.getLogger("brand-agent")
 _sessions: dict[str, Session] = {}
 # Completed sessions kept for REST API access after WebSocket disconnects
 _completed: dict[str, Session] = {}
+
+# Per-session teardown events. When a new WS connection arrives for the same
+# session_id, the old connection's event is set to signal it must close.
+_active_teardowns: dict[str, "asyncio.Event"] = {}
+
+
+def register_teardown_event(session_id: str) -> "asyncio.Event":
+    """Register a stop event for the current WebSocket connection.
+
+    If a previous connection exists for this session_id, signal it to close
+    (prevents duplicate Live API streams for the same session).
+    Returns a fresh event for the new connection to watch.
+    """
+    existing = _active_teardowns.get(session_id)
+    if existing and not existing.is_set():
+        existing.set()
+        logger.info(
+            f"[{session_id}] Action: superseded_old_connection | "
+            f"Signalling previous Live API session to close"
+        )
+    ev = asyncio.Event()
+    _active_teardowns[session_id] = ev
+    return ev
+
+
+def clear_teardown_event(session_id: str) -> None:
+    """Remove the teardown event when a connection ends normally."""
+    _active_teardowns.pop(session_id, None)
 
 
 def create_session(session_id: str | None = None) -> Session:

@@ -5,7 +5,7 @@ import { raw, fonts, easeCurve } from '../styles/tokens';
 // Stagger delays — cards appear in quick succession when proposals arrive
 const CARD_STAGGER_MS = 180;
 
-export default function NameProposals({ names = [], autoSelectSeconds = 8, onSelect, narrationDone = false }) {
+export default function NameProposals({ names = [], autoSelectSeconds = 8, onSelect, narrationDone = false, frozen = false }) {
   const [selected, setSelected] = useState(null);
   const [countdown, setCountdown] = useState(autoSelectSeconds);
   const [hoveredIdx, setHoveredIdx] = useState(null);
@@ -43,9 +43,17 @@ export default function NameProposals({ names = [], autoSelectSeconds = 8, onSel
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [names.length]);
 
+  // Stop countdown immediately when user reacts (without clicking a card)
+  useEffect(() => {
+    if (frozen && timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }, [frozen]);
+
   // Countdown starts ONLY after agent finishes narrating all names
   useEffect(() => {
-    if (selected || names.length === 0 || !narrationDone) return;
+    if (selected || names.length === 0 || !narrationDone || frozen) return;
     setCountdown(autoSelectSeconds);
     timerRef.current = setInterval(() => {
       setCountdown(prev => {
@@ -181,7 +189,7 @@ export default function NameProposals({ names = [], autoSelectSeconds = 8, onSel
 
       {/* Countdown / waiting hint */}
       <AnimatePresence>
-        {!selected && visibleCount > 0 && (
+        {!selected && !frozen && visibleCount > 0 && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
