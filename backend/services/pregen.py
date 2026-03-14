@@ -359,6 +359,8 @@ class PreGenerator:
             reference_images=ref_images if ref_images else None,
             palette=session.palette,
             has_logo_ref=bool(session.logo_image_bytes),
+            tagline=session.tagline,
+            brand_values=session.brand_values,
         )
 
         latency = (time.perf_counter() - t0) * 1000

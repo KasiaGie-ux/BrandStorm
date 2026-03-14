@@ -192,18 +192,21 @@ class ImageGenerator:
         reference_images: list[tuple[bytes, str]] | None = None,
         palette: list[dict[str, str]] | None = None,
         has_logo_ref: bool = False,
+        tagline: str | None = None,
+        brand_values: list[str] | None = None,
     ) -> dict:
         """Generate an image asset. Returns dict with status, image_data, etc.
 
         Chain order:
-          1. Vertex AI global  — primary model, **1 attempt only**
-          2. Developer API     — primary model, up to MAX_RETRIES_429 retries
-          3. Vertex AI         — fallback models, up to MAX_RETRIES_429 retries each
+          1. Vertex AI global  -- primary model, **1 attempt only**
+          2. Developer API     -- primary model, up to MAX_RETRIES_429 retries
+          3. Vertex AI         -- fallback models, up to MAX_RETRIES_429 retries each
         """
         ratio = aspect_ratio or ASPECT_RATIOS.get(asset_type, "1:1")
         full_prompt = self._build_prompt(
             prompt, asset_type, brand_name, style_anchor, ratio,
             palette=palette, has_logo_ref=has_logo_ref,
+            tagline=tagline, brand_values=brand_values,
         )
 
         # Build contents: reference images + text prompt, or text-only
@@ -310,6 +313,8 @@ class ImageGenerator:
         style_anchor: str, aspect_ratio: str,
         palette: list[dict[str, str]] | None = None,
         has_logo_ref: bool = False,
+        tagline: str | None = None,
+        brand_values: list[str] | None = None,
     ) -> str:
         from prompts.image_prompts import build_image_prompt
         return build_image_prompt(
@@ -320,6 +325,8 @@ class ImageGenerator:
             aspect_ratio=aspect_ratio,
             palette=palette,
             has_logo_ref=has_logo_ref,
+            tagline=tagline,
+            brand_values=brand_values,
         )
 
     @staticmethod

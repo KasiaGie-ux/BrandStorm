@@ -404,6 +404,8 @@ class ToolExecutor:
             reference_images=ref_images if ref_images else None,
             palette=session.palette,
             has_logo_ref=bool(session.logo_image_bytes),
+            tagline=session.tagline,
+            brand_values=session.brand_values,
         )
 
         event = None
