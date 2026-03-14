@@ -161,6 +161,12 @@ class Session:
     # agent_loop waits on this before sending auto-continue nudges.
     audio_done_event: Any = field(default=None, repr=False)
 
+    def __post_init__(self):
+        import asyncio
+        # Initialize once here — never reassigned elsewhere.
+        # Both _wait_and_nudge and _tool_background only call .clear()/.set().
+        self.frontend_ready = asyncio.Event()
+
     @property
     def total_assets(self) -> int:
         return 3

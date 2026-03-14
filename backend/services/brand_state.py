@@ -92,6 +92,17 @@ def transition_phase(session: Session, new_phase: AgentPhase) -> bool:
 
 def infer_phase_from_tool(session: Session, tool_name: str) -> None:
     """Infer and update phase based on which tool the agent called."""
+    # Don't override micro-phases — the dispatch state machine controls these
+    _MICRO_PHASES = {
+        AgentPhase.ANALYSIS_SPEECH, AgentPhase.PROPOSING, AgentPhase.AWAITING_NAME,
+        AgentPhase.REVEAL_SPEECH, AgentPhase.REVEAL_TOOL,
+        AgentPhase.PALETTE_SPEECH, AgentPhase.PALETTE_TOOL,
+        AgentPhase.FONTS_SPEECH, AgentPhase.FONTS_TOOL,
+        AgentPhase.IMAGE_SPEECH, AgentPhase.IMAGE_TOOL,
+        AgentPhase.VOICEOVER_SPEECH, AgentPhase.VOICEOVER_TOOL,
+    }
+    if session.phase in _MICRO_PHASES:
+        return
     phase_map = {
         "analyze_product": AgentPhase.ANALYZING,
         "propose_names": AgentPhase.PROPOSING,

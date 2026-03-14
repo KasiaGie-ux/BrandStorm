@@ -22,7 +22,7 @@ const VISUAL_TYPES = new Set([
   'brand_name_reveal', 'tagline_reveal',
   'brand_story', 'brand_values', 'palette_reveal',
   'font_suggestion', 'tool_invoked', 'image_generated',
-  'voiceover_handoff', 'voiceover_story', 'generation_complete',
+  'voiceover_handoff', 'voiceover_greeting', 'voiceover_story',
   'tone_of_voice',
 ]);
 

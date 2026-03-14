@@ -185,7 +185,7 @@ class ToolExecutor:
             )
             result = {
                 "status": "success",
-                "message": "Names displayed. Do NOT speak. Wait for user selection.",
+                "message": "Done. Do NOT speak.",
                 "names": [n["name"] for n in pregen],
             }
             return result, None  # don't re-emit — already sent to frontend
@@ -217,7 +217,7 @@ class ToolExecutor:
         }
         result = {
             "status": "success",
-            "message": "Names displayed. Do NOT speak. Wait for user selection.",
+            "message": "Done. Do NOT speak.",
             "names": [n["name"] for n in validated],
         }
         return result, event
@@ -277,7 +277,7 @@ class ToolExecutor:
         result = {
             "status": "success",
             "brand_name": brand_name,
-            "message": "Brand identity revealed. Do NOT speak.",
+            "message": "Done. Do NOT speak.",
         }
         return result, last_event
 
@@ -309,7 +309,7 @@ class ToolExecutor:
         }
         result = {
             "status": "success",
-            "message": "Fonts displayed. Do NOT speak.",
+            "message": "Done. Do NOT speak.",
         }
         return result, event
 
@@ -565,7 +565,7 @@ class ToolExecutor:
 
         result = {
             "status": "success",
-            "message": "Palette displayed. Do NOT speak.",
+            "message": "Done. Do NOT speak.",
             "mood": mood,
             "style_anchor": style_anchor,
             "product_colors": product_colors,
@@ -677,7 +677,7 @@ class ToolExecutor:
             # Fallback: generate story fresh
             story_wav = await _tts_generate(
                 session_id=session.id,
-                text=story_text or narration_text,
+                text=narration_text,
                 voice=NARRATOR_VOICE,
                 label="voiceover_story",
             )
@@ -738,11 +738,18 @@ class ToolExecutor:
                 f"Completing with 0 assets"
             )
 
-        zip_url = await self._storage.create_zip(
-            session_id=session.id,
-            asset_urls=session.asset_urls,
-        )
-        session.zip_url = zip_url
+        try:
+            zip_url = await self._storage.create_zip(
+                session_id=session.id,
+                asset_urls=session.asset_urls,
+            )
+            session.zip_url = zip_url
+        except Exception as e:
+            logger.error(
+                f"[{session.id}] Phase: GENERATING | Action: zip_creation_failed | Error: {e}"
+            )
+            zip_url = None
+            session.zip_url = None
 
         # Build images array from asset_urls for frontend
         images = []
@@ -759,7 +766,7 @@ class ToolExecutor:
             "brand_name": session.brand_name,
             "assets_count": len(session.completed_assets),
             "zip_url": zip_url,
-            "message": "Brand kit finalized. Do NOT speak.",
+            "message": "Done. Do NOT speak.",
         }
         event = {
             "type": "generation_complete",

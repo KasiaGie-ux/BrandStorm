@@ -266,7 +266,10 @@ function HiddenAudio({ audioUrl }) {
   useEffect(() => {
     if (!audioRef.current || !audioUrl) return;
     const a = audioRef.current;
-    const onEnd = () => window.dispatchEvent(new CustomEvent('voiceover-greeting-ended'));
+    const onEnd = () => {
+      window._voiceoverGreetingDone = true;
+      window.dispatchEvent(new CustomEvent('voiceover-greeting-ended'));
+    };
     const onStop = () => { a.pause(); a.currentTime = 0; };
     const startPlay = () => { a.play().catch(() => {}); };
     a.addEventListener('ended', onEnd);
@@ -351,6 +354,8 @@ function ChatVoiceoverPlayer({ audioUrl, onEnded }) {
       a.play().then(() => setPlaying(true)).catch(() => {});
     };
     window.addEventListener('voiceover-greeting-ended', startPlay);
+    // If greeting already finished before this component mounted, start immediately
+    if (window._voiceoverGreetingDone) startPlay();
     // Secondary fallback: if no greeting exists, start after handoff ends
     const startFromHandoff = () => {
       setTimeout(() => { if (a.paused) startPlay(); }, 500);
@@ -359,10 +364,10 @@ function ChatVoiceoverPlayer({ audioUrl, onEnded }) {
     // Stop playback when user sends a message (barge-in)
     const onStop = () => { a.pause(); a.currentTime = 0; setPlaying(false); setProgress(0); setCurrent(0); };
     window.addEventListener('voiceover-stop', onStop);
-    // If no preceding audio exists, autoplay after a longer delay
+    // Fallback: if nothing triggered playback after 10s, start anyway
     const fallbackTimer = setTimeout(() => {
-      if (!playing && a.paused) startPlay();
-    }, 8000);
+      if (a.paused) startPlay();
+    }, 10000);
     return () => {
       clearTimeout(fallbackTimer);
       window.removeEventListener('voiceover-stop', onStop);

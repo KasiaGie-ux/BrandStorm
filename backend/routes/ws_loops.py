@@ -132,8 +132,6 @@ async def _wait_and_nudge(
     Guards against stale nudges: if the user interrupted (barge-in) or
     the session is awaiting feedback we silently drop the nudge.
     """
-    if not hasattr(session, "frontend_ready"):
-        session.frontend_ready = asyncio.Event()
     session.frontend_ready.clear()
 
     try:
@@ -524,19 +522,19 @@ async def receive_loop(
             elif msg_type == "audio_playback_done":
                 logger.info(f"[{session.id}] Action: audio_playback_done (frontend flush complete)")
                 # Unblock any pending auto-continue nudges
-                if hasattr(session, "frontend_ready"):
-                    session.frontend_ready.set()
+                session.frontend_ready.set()
 
             elif msg_type == "voiceover_playback_done":
                 # Frontend signals Anna's story narration finished playing.
-                session.voiceover_playing = False
+                # Keep voiceover_playing=True until after nudge is sent so that
+                # any Gemini audio generated in response to the nudge is suppressed.
                 logger.info(f"[{session.id}] Action: voiceover_playback_done")
                 # Send finalize nudge directly to Live API from here
                 if session.audio_url and not session.zip_url and session.brand_name:
                     finalize_nudge = (
-                        "Anna's narration has finished. Now call finalize_brand_kit "
-                        "to package everything. Say ONE closing sentence, then call "
-                        "finalize_brand_kit."
+                        "Anna's narration has finished. "
+                        "Call finalize_brand_kit now, then say ONE warm closing sentence. "
+                        "Do NOT generate another voiceover."
                     )
                     try:
                         await live_session.send_client_content(
@@ -556,6 +554,8 @@ async def receive_loop(
                             f"[{session.id}] Action: voiceover_finalize_nudge_failed | "
                             f"Error: {e}"
                         )
+                else:
+                    session.voiceover_playing = False
 
             elif msg_type == "stop_session":
                 logger.info(f"[{session.id}] Action: stop_requested")
@@ -602,7 +602,7 @@ async def _dispatch_next_step(
         return
 
     phase = session.phase
-    _MAX = 8
+    _MAX = 15
 
     if session.auto_continue_count >= _MAX:
         if session.brand_name and not session.zip_url:
@@ -1223,16 +1223,15 @@ async def agent_loop(
                                         "reveal_brand_identity", "suggest_fonts",
                                         "generate_palette", "propose_names",
                                     }
-                                    # Phases where the agent goes straight to a tool call
-                                    # without a speech preamble — no audio in this turn.
+                                    # Tool-only phases never produce agent audio — skip wait to avoid deadlock.
+                                    # These phases are dispatched with "Do NOT speak" nudges so frontend
+                                    # never fires audio_playback_done, and the wait would always time out.
                                     _TOOL_ONLY_PHASES = {
-                                        AgentPhase.REVEAL_TOOL, AgentPhase.PALETTE_TOOL,
-                                        AgentPhase.FONTS_TOOL, AgentPhase.IMAGE_TOOL,
-                                        AgentPhase.VOICEOVER_TOOL, AgentPhase.PROPOSING,
+                                        AgentPhase.REVEAL_TOOL,
+                                        AgentPhase.PALETTE_TOOL,
+                                        AgentPhase.FONTS_TOOL,
                                     }
                                     if _fc.name in _FAST_TOOLS and session.phase not in _TOOL_ONLY_PHASES:
-                                        if not hasattr(session, "frontend_ready"):
-                                            session.frontend_ready = asyncio.Event()
                                         session.frontend_ready.clear()
                                         try:
                                             await asyncio.wait_for(
@@ -1259,6 +1258,10 @@ async def agent_loop(
                                     if _fc.name == "propose_names":
                                         event = None
 
+                                    # Allow Gemini to speak closing sentence after finalize
+                                    if _fc.name == "finalize_brand_kit":
+                                        session.voiceover_playing = False
+
                                     # Send tool_response to Live API
                                     await _ls.send_tool_response(
                                         function_responses=[fn_response]
@@ -1283,6 +1286,17 @@ async def agent_loop(
                                         brand_state.transition_phase(session, AgentPhase.FONTS_TOOL)
                                     elif _fc.name == "generate_image":
                                         brand_state.transition_phase(session, AgentPhase.IMAGE_TOOL)
+                                    elif _fc.name == "finalize_brand_kit":
+                                        # Voiceover suppression ends — finalize is done
+                                        session.voiceover_playing = False
+
+                                    # Voiceover skipped (no text / TTS unavailable) — clear flag
+                                    # so _dispatch_next_step can proceed to finalize.
+                                    if _fc.name == "generate_voiceover" and not event:
+                                        session.voiceover_playing = False
+                                        logger.warning(
+                                            f"[{session.id}] Action: voiceover_skipped_clearing_flag"
+                                        )
 
                                     # Voiceover safety timeout
                                     if _fc.name == "generate_voiceover" and event:
@@ -1314,6 +1328,12 @@ async def agent_loop(
                                         f"[{session.id}] Action: tool_bg_error | "
                                         f"Tool: {_fc.name} | Error: {e}"
                                     )
+                                    # Clear voiceover flag on exception so pipeline isn't permanently blocked
+                                    if _fc.name == "generate_voiceover":
+                                        session.voiceover_playing = False
+                                        logger.warning(
+                                            f"[{session.id}] Action: voiceover_flag_cleared_on_error"
+                                        )
                                 finally:
                                     _pending_tool_bg[0] -= 1
                                     if _pending_tool_bg[0] == 0:

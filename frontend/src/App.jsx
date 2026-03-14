@@ -89,7 +89,7 @@ export default function App() {
     if (!pendingResultsRef.current) return;
     if (!audioPlayback.isPlaying) {
       pendingResultsRef.current = false;
-      setTimeout(() => setScreen(SCREENS.RESULTS), 1500);
+      setTimeout(() => setScreen(SCREENS.RESULTS), 3000);
     }
   }, [audioPlayback.isPlaying]);
 
@@ -357,15 +357,16 @@ export default function App() {
           zip_url: event.zip_url,
           ...kitData,
         }));
-        addMessage({ type: 'generation_complete' });
         generationDoneRef.current = true;
+        // Show badge after agent text has rendered (800ms stagger)
+        setTimeout(() => addMessage({ type: 'generation_complete' }), 800);
         // If no voiceover or voiceover already finished → transition after agent audio
         if (!hasVoiceoverRef.current || voiceoverPlayedRef.current) {
           if (audioPlayback.isPlaying) {
             // Agent is speaking closing sentence — wait for it to finish
             pendingResultsRef.current = true;
           } else {
-            setTimeout(() => setScreen(SCREENS.RESULTS), 1500);
+            setTimeout(() => setScreen(SCREENS.RESULTS), 3000);
           }
         }
         // Otherwise wait for onVoiceoverEnd callback
@@ -526,6 +527,7 @@ export default function App() {
     launchTextRef.current = '';
     launchIntroRef.current = null;
     window._voiceoverHandoffDone = false;
+    window._voiceoverGreetingDone = false;
     pendingResumeRef.current = null;
     awaitingFirstConnect.current = true;
     generationDoneRef.current = false;

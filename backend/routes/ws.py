@@ -114,5 +114,10 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
         )
         await send_json(ws, {"type": "error", "message": str(e)})
     finally:
+        # Cancel background pregen/voiceover tasks so they don't outlive the WS connection
+        for task_name, task in list(session.pregen_tasks.items()):
+            if not task.done():
+                task.cancel()
+                logger.info(f"[{session_id}] Action: cancelled_pregen_task | Task: {task_name}")
         brand_state.remove_session(session_id)
         logger.info(f"[{session_id}] Action: session_ended")
