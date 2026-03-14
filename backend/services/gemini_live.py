@@ -210,6 +210,83 @@ TOOL_DECLARATIONS = types.Tool(
             ),
         ),
         types.FunctionDeclaration(
+            name="update_tagline",
+            description=(
+                "Update ONLY the tagline. Use when user wants a different tagline "
+                "without changing anything else. Do NOT call reveal_brand_identity."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "tagline": types.Schema(
+                        type=types.Type.STRING,
+                        description="The new tagline.",
+                    ),
+                },
+                required=["tagline"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="update_brand_story",
+            description=(
+                "Update ONLY the brand story. Use when user wants a different narrative "
+                "without changing the name, tagline, palette, or images. "
+                "Automatically triggers a new voiceover with the updated story."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "brand_story": types.Schema(
+                        type=types.Type.STRING,
+                        description="The new brand story (2-4 sentences).",
+                    ),
+                },
+                required=["brand_story"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="update_brand_voice",
+            description=(
+                "Update ONLY the brand voice (tone of voice do/don't rules). "
+                "Use when user wants different tone guidelines without changing anything else."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "tone_of_voice_do": types.Schema(
+                        type=types.Type.ARRAY,
+                        description="3-5 tone rules (what the brand DOES).",
+                        items=types.Schema(type=types.Type.STRING),
+                    ),
+                    "tone_of_voice_dont": types.Schema(
+                        type=types.Type.ARRAY,
+                        description="3-5 tone rules (what the brand DOES NOT do).",
+                        items=types.Schema(type=types.Type.STRING),
+                    ),
+                },
+                required=["tone_of_voice_do", "tone_of_voice_dont"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="update_brand_values",
+            description=(
+                "Update ONLY the brand values list. Use when user wants different values "
+                "without changing the name, tagline, story, or visuals. "
+                "Do NOT call reveal_brand_identity."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "brand_values": types.Schema(
+                        type=types.Type.ARRAY,
+                        description="3-5 brand values (single words or short phrases).",
+                        items=types.Schema(type=types.Type.STRING),
+                    ),
+                },
+                required=["brand_values"],
+            ),
+        ),
+        types.FunctionDeclaration(
             name="generate_voiceover",
             description=(
                 "Generate brand story voiceover with two voices. "
@@ -294,10 +371,10 @@ def build_live_config() -> types.LiveConnectConfig:
         realtime_input_config=types.RealtimeInputConfig(
             automatic_activity_detection=types.AutomaticActivityDetection(
                 disabled=False,
-                start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
+                start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
                 end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
-                prefix_padding_ms=20,
-                silence_duration_ms=100,
+                prefix_padding_ms=300,
+                silence_duration_ms=800,
             )
         ),
     )

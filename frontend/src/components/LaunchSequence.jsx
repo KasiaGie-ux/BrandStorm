@@ -167,15 +167,14 @@ function IntroText({ text, visible }) {
 }
 
 // ═══════════ LAUNCH SEQUENCE ═══════════
-export default function LaunchSequence({ imagePreview, firstAgentText, openingData, onComplete }) {
+export default function LaunchSequence({ imagePreview, firstAgentText, openingData, onComplete, getIsAudioPlaying }) {
   // Phases: dimming → connecting → words → intro → transition
   const [phase, setPhase] = useState('dimming');
   const [dimLevel, setDimLevel] = useState(0);
   const completeFired = useRef(false);
   const introTimerRef = useRef(null);
-  const transTimerRef = useRef(null);
-  const doneTimerRef = useRef(null);
   const wordsTriggered = useRef(false);
+  const audioWasPlaying = useRef(false);
 
   // Parse the latest accumulated text — opener is locked at words phase,
   // intro updates as more text streams in
@@ -188,6 +187,11 @@ export default function LaunchSequence({ imagePreview, firstAgentText, openingDa
     completeFired.current = true;
     onComplete();
   }, [onComplete]);
+
+  const triggerTransitionAndComplete = useCallback(() => {
+    setPhase('transition');
+    setTimeout(() => fireComplete(), 600);
+  }, [fireComplete]);
 
   // Phase 1: dimming → connecting (automatic, time-based)
   useEffect(() => {
@@ -221,64 +225,78 @@ export default function LaunchSequence({ imagePreview, firstAgentText, openingDa
       return; // not ready yet
     }
 
-    // 1.5s after words → show intro (by then more text may have arrived)
+    // Show intro after words have had a moment to appear (animation stagger)
     introTimerRef.current = setTimeout(() => {
       setPhase('intro');
     }, 1500);
 
-    // 3s after intro → begin transition (gives 4.5s total for intro to be visible)
-    transTimerRef.current = setTimeout(() => {
-      setPhase('transition');
-    }, 4500);
-
-    // Transition out, then fire complete
-    doneTimerRef.current = setTimeout(() => {
-      fireComplete();
-    }, 5200);
-
     return () => {
-      // Only clear timers if words phase hasn't triggered yet.
-      // Once wordsTriggered = true the timers must run to completion.
       if (!wordsTriggered.current) {
         clearTimeout(introTimerRef.current);
-        clearTimeout(transTimerRef.current);
-        clearTimeout(doneTimerRef.current);
       }
     };
-  }, [openingData, firstAgentText, parsed.opener, fireComplete]);
+  }, [openingData, firstAgentText, parsed.opener]);
+
+  // Phase 3: Once in 'intro' phase, poll for audio completion.
+  // Transitions to studio only after agent finishes speaking.
+  useEffect(() => {
+    if (phase !== 'intro') return;
+
+    // Reset per-poll tracking
+    audioWasPlaying.current = false;
+
+    // Give audio up to 1.5s to start before assuming silence
+    let audioStartDeadline = Date.now() + 1500;
+
+    const poll = setInterval(() => {
+      const isPlaying = getIsAudioPlaying?.() ?? false;
+      if (isPlaying) {
+        audioWasPlaying.current = true;
+        audioStartDeadline = Infinity; // audio arrived, no deadline
+      } else if (audioWasPlaying.current) {
+        // Audio was playing and has now finished — go to studio
+        clearInterval(poll);
+        if (!completeFired.current) triggerTransitionAndComplete();
+      } else if (Date.now() > audioStartDeadline) {
+        // Audio never arrived within deadline — proceed anyway
+        clearInterval(poll);
+        if (!completeFired.current) triggerTransitionAndComplete();
+      }
+    }, 150);
+
+    return () => clearInterval(poll);
+  }, [phase, getIsAudioPlaying, triggerTransitionAndComplete]);
 
   // Fallback: if nothing triggered words after 7s, use whatever text we have or skip
   useEffect(() => {
     const t = setTimeout(() => {
       if (!wordsTriggered.current) {
         wordsTriggered.current = true;
-        // Use accumulated transcription if available, otherwise default
         const fallbackOpener = parsed.opener || firstAgentText || '';
         setLockedOpener(fallbackOpener);
         setLockedIntro(parsed.intro || "I'm Charon, your creative director. Let's build something extraordinary.");
-        setPhase(fallbackOpener ? 'words' : 'transition');
         if (fallbackOpener) {
-          introTimerRef.current = setTimeout(() => setPhase('intro'), 1500);
-          transTimerRef.current = setTimeout(() => setPhase('transition'), 4500);
-          doneTimerRef.current = setTimeout(() => fireComplete(), 5200);
+          setPhase('words');
+          introTimerRef.current = setTimeout(() => {
+            setPhase('intro');
+          }, 1500);
         } else {
-          doneTimerRef.current = setTimeout(() => fireComplete(), 600);
+          triggerTransitionAndComplete();
         }
       }
     }, 7000);
     return () => clearTimeout(t);
-  }, [fireComplete, parsed.opener, parsed.intro, firstAgentText]);
+  }, [fireComplete, parsed.opener, parsed.intro, firstAgentText, triggerTransitionAndComplete]);
 
-  // Hard fallback: if still not complete after 12s, transition anyway
+  // Hard fallback: if still not complete after 20s, transition anyway
   useEffect(() => {
     const t = setTimeout(() => {
       if (!completeFired.current) {
-        setPhase('transition');
-        setTimeout(() => fireComplete(), 600);
+        triggerTransitionAndComplete();
       }
-    }, 12000);
+    }, 20000);
     return () => clearTimeout(t);
-  }, [fireComplete]);
+  }, [triggerTransitionAndComplete]);
 
   const isConnecting = phase === 'dimming' || phase === 'connecting';
   const showWords = phase === 'words' || phase === 'intro' || phase === 'transition';

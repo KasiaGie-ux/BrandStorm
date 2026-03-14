@@ -125,6 +125,14 @@ class ToolExecutor:
                 result, event = await self._handle_generate_image(session, args)
             elif name == "generate_palette":
                 result, event = await self._handle_generate_palette(session, args)
+            elif name == "update_tagline":
+                result, event = await self._handle_update_tagline(session, args)
+            elif name == "update_brand_story":
+                result, event = await self._handle_update_brand_story(session, args)
+            elif name == "update_brand_voice":
+                result, event = await self._handle_update_brand_voice(session, args)
+            elif name == "update_brand_values":
+                result, event = await self._handle_update_brand_values(session, args)
             elif name == "generate_voiceover":
                 result, event = await self._handle_voiceover(session, args, emit_cb=emit_cb)
             elif name == "finalize_brand_kit":
@@ -172,13 +180,20 @@ class ToolExecutor:
     ) -> tuple[dict, dict | None]:
         """propose_names — present 3 brand name proposals to user.
 
-        If names were pre-generated in parallel (during analysis speech), return
-        them immediately without re-generating. The frontend already has the cards.
+        If names were pre-generated in parallel (during analysis speech) AND
+        already sent to the frontend (_pregen_names_sent=True), return them
+        immediately — the cards are already visible.
+
+        If _pregen_names_sent is False, the user never saw the pregen names
+        (e.g. this is a retry after name rejection). Ignore the stale cache
+        and use the agent's fresh args instead.
         """
-        # Check if names were pre-generated in parallel — already sent to frontend
+        # Only use pregen cache if cards were already sent to frontend
         pregen = getattr(session, "_pregen_names", None)
-        if pregen:
+        pregen_sent = getattr(session, "_pregen_names_sent", False)
+        if pregen and pregen_sent:
             session._pregen_names = None  # clear to prevent re-use
+            session._pregen_names_sent = False
             logger.info(
                 f"[{session.id}] Phase: PROPOSING | Action: propose_names_pregen_hit | "
                 f"Names: {[n['name'] for n in pregen]}"
@@ -189,6 +204,15 @@ class ToolExecutor:
                 "names": [n["name"] for n in pregen],
             }
             return result, None  # don't re-emit — already sent to frontend
+
+        # Stale pregen cache (cards never shown) — discard and use agent's args
+        if pregen and not pregen_sent:
+            logger.info(
+                f"[{session.id}] Phase: PROPOSING | Action: propose_names_pregen_discarded | "
+                f"Reason: _pregen_names_sent=False (retry/regen) | "
+                f"Using agent args instead"
+            )
+            session._pregen_names = None
 
         names = args.get("names", [])
         if not names:
@@ -706,6 +730,64 @@ class ToolExecutor:
         }
 
         return result, last_event
+
+    async def _handle_update_tagline(
+        self, session: Session, args: dict,
+    ) -> tuple[dict, dict | None]:
+        """update_tagline — replace only the tagline, nothing else."""
+        tagline = args.get("tagline", "").strip()
+        if not tagline:
+            return {"status": "error", "error": "No tagline provided"}, None
+        session.tagline = tagline
+        logger.info(f"[{session.id}] Action: update_tagline | Tagline: {tagline[:60]}")
+        event = {"type": "tagline_reveal", "tagline": tagline}
+        return {"status": "success", "message": "Done. Do NOT speak."}, event
+
+    async def _handle_update_brand_story(
+        self, session: Session, args: dict,
+    ) -> tuple[dict, dict | None]:
+        """update_brand_story — replace story and clear voiceover so it regenerates."""
+        brand_story = args.get("brand_story", "").strip()
+        if not brand_story:
+            return {"status": "error", "error": "No brand_story provided"}, None
+        session.brand_story = brand_story
+        # Clear cached voiceover — will be regenerated in next pipeline step
+        session.audio_url = None
+        session.voiceover_sent = False
+        if session.zip_url:
+            session.zip_url = None
+        logger.info(f"[{session.id}] Action: update_brand_story | Story: {brand_story[:60]}")
+        event = {"type": "brand_story", "story": brand_story}
+        return {"status": "success", "message": "Done. Voiceover will regenerate."}, event
+
+    async def _handle_update_brand_voice(
+        self, session: Session, args: dict,
+    ) -> tuple[dict, dict | None]:
+        """update_brand_voice — replace tone of voice do/don't rules only."""
+        tone_do = args.get("tone_of_voice_do", [])
+        tone_dont = args.get("tone_of_voice_dont", [])
+        if not tone_do and not tone_dont:
+            return {"status": "error", "error": "No tone rules provided"}, None
+        session.tone_of_voice = {"do": tone_do, "dont": tone_dont}
+        if session.zip_url:
+            session.zip_url = None
+        logger.info(f"[{session.id}] Action: update_brand_voice | Do: {tone_do[:2]} | Dont: {tone_dont[:2]}")
+        event = {"type": "tone_of_voice", "tone_of_voice": {"do": tone_do, "dont": tone_dont}}
+        return {"status": "success", "message": "Done. Do NOT speak."}, event
+
+    async def _handle_update_brand_values(
+        self, session: Session, args: dict,
+    ) -> tuple[dict, dict | None]:
+        """update_brand_values — replace only the brand values list."""
+        values = args.get("brand_values", [])
+        if not values:
+            return {"status": "error", "error": "No brand values provided"}, None
+        session.brand_values = values
+        if session.zip_url:
+            session.zip_url = None
+        logger.info(f"[{session.id}] Action: update_brand_values | Values: {values}")
+        event = {"type": "brand_values", "values": values}
+        return {"status": "success", "message": "Done. Do NOT speak."}, event
 
     async def _handle_finalize(
         self, session: Session, args: dict,

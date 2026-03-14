@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import HeroStage from './components/HeroStage';
 import UploadStage from './components/UploadStage';
-import LaunchSequence, { parseAgentText } from './components/LaunchSequence';
+import LaunchSequence from './components/LaunchSequence';
 import StudioScreen from './components/StudioScreen';
 import ResultsScreen from './components/ResultsScreen';
 import useWebSocket from './hooks/useWebSocket';
@@ -336,16 +336,29 @@ export default function App() {
         addMessage({ type: 'tool_invoked', tool: event.tool, args: event.args || {}, phase: event.phase });
         break;
 
-      case 'image_generated':
-        addMessage({
+      case 'image_generated': {
+        const newImg = {
           type: 'image_generated',
           url: event.url,
           asset_type: event.asset_type,
           label: event.asset_type?.replace('_', ' '),
           description: event.description,
           progress: event.progress,
+        };
+        setMessages(prev => {
+          const idx = prev.findLastIndex(
+            m => m.type === 'image_generated' && m.asset_type === event.asset_type
+          );
+          if (idx !== -1) {
+            const next = [...prev];
+            next[idx] = { ...prev[idx], ...newImg };
+            messagesRef.current = next;
+            return next;
+          }
+          return [...prev, { ...newImg, _id: ++msgIdCounter.current }];
         });
         break;
+      }
 
       case 'generation_complete': {
         clearTimeout(generationTimeoutRef.current);
@@ -382,31 +395,79 @@ export default function App() {
         break;
 
       case 'tagline_reveal':
-        addMessage({ type: 'tagline_reveal', tagline: event.tagline });
+        // Replace existing tagline if present (regen), otherwise add new
+        setMessages(prev => {
+          const idx = prev.findLastIndex(m => m.type === 'tagline_reveal');
+          if (idx !== -1) {
+            const next = [...prev];
+            next[idx] = { ...prev[idx], tagline: event.tagline };
+            messagesRef.current = next;
+            return next;
+          }
+          return [...prev, { type: 'tagline_reveal', tagline: event.tagline, _id: ++msgIdCounter.current }];
+        });
         break;
 
       case 'brand_values':
-        addMessage({ type: 'brand_values', values: event.values });
+        if (event.values?.length) {
+          setMessages(prev => {
+            const idx = prev.findLastIndex(m => m.type === 'brand_values');
+            if (idx !== -1) {
+              const next = [...prev];
+              next[idx] = { ...prev[idx], values: event.values };
+              messagesRef.current = next;
+              return next;
+            }
+            const next = [...prev, { type: 'brand_values', values: event.values, _id: ++msgIdCounter.current }];
+            messagesRef.current = next;
+            return next;
+          });
+        }
         break;
 
       case 'tone_of_voice':
-        addMessage({ type: 'tone_of_voice', tone: event.tone_of_voice });
+        // Replace existing tone_of_voice if present (regen), otherwise add new
+        setMessages(prev => {
+          const idx = prev.findLastIndex(m => m.type === 'tone_of_voice');
+          if (idx !== -1) {
+            const next = [...prev];
+            next[idx] = { ...prev[idx], tone: event.tone_of_voice };
+            messagesRef.current = next;
+            return next;
+          }
+          return [...prev, { type: 'tone_of_voice', tone: event.tone_of_voice, _id: ++msgIdCounter.current }];
+        });
         break;
 
       case 'brand_story':
-        addMessage({ type: 'brand_story', story: event.story });
+        // Replace existing brand_story if present (regen), otherwise add new
+        setMessages(prev => {
+          const idx = prev.findLastIndex(m => m.type === 'brand_story');
+          if (idx !== -1) {
+            const next = [...prev];
+            next[idx] = { ...prev[idx], story: event.story };
+            messagesRef.current = next;
+            return next;
+          }
+          return [...prev, { type: 'brand_story', story: event.story, _id: ++msgIdCounter.current }];
+        });
         break;
 
       case 'name_proposals': {
-        // Dedup: backend sends early (during audio) + tool executor may re-send.
-        // Only skip if the LAST name_proposals already has the same names (same batch).
-        // Allow new batches through (user rejected and agent proposes fresh names).
-        const newNames = (event.names || []).map(n => n.name).sort().join(',');
+        // Dedup: pregen sends first batch, agent may also call propose_names.
+        // Block second batch unless user has already chosen a name (brand_name_reveal present).
+        // This covers normal flow (pregen + agent both send) while allowing rejection retries.
         setMessages(prev => {
-          const lastProposal = [...prev].reverse().find(m => m.type === 'name_proposals');
-          if (lastProposal) {
-            const existingNames = (lastProposal.names || []).map(n => n.name).sort().join(',');
-            if (existingNames === newNames) return prev; // same batch — skip
+          const hasExisting = prev.some(m => m.type === 'name_proposals');
+          if (hasExisting) {
+            // Same names — always skip (duplicate send)
+            const lastProposal = [...prev].reverse().find(m => m.type === 'name_proposals');
+            const existingNames = (lastProposal?.names || []).map(n => n.name).sort().join(',');
+            const newNames = (event.names || []).map(n => n.name).sort().join(',');
+            if (existingNames === newNames) return prev;
+            // Block second batch unless name was already chosen (brand_name_reveal = chosen)
+            const nameChosen = prev.some(m => m.type === 'brand_name_reveal');
+            if (!nameChosen) return prev;
           }
           const next = [...prev, { type: 'name_proposals', names: event.names, auto_select_seconds: event.auto_select_seconds || 8, _id: ++msgIdCounter.current }];
           messagesRef.current = next;
@@ -417,18 +478,27 @@ export default function App() {
 
       case 'palette_reveal':
         if (event.colors?.length) {
-          // Dedup: skip if palette already rendered (tool call + text parser can both emit)
           setMessages(prev => {
-            if (prev.some(m => m.type === 'palette_reveal')) return prev;
+            const idx = prev.findLastIndex(m => m.type === 'palette_reveal');
+            if (idx !== -1) {
+              const existingColors = (prev[idx].colors || []).map(c => c.hex || c).join(',');
+              const newColors = (event.colors || []).map(c => c.hex || c).join(',');
+              if (existingColors === newColors) return prev; // same gen, skip
+              const next = [...prev];
+              next[idx] = { ...prev[idx], colors: event.colors, mood: event.mood };
+              messagesRef.current = next;
+              return next;
+            }
             return [...prev, { type: 'palette_reveal', colors: event.colors, mood: event.mood, _id: ++msgIdCounter.current }];
           });
         }
         break;
 
       case 'font_suggestion':
-        // Dedup: skip if font_suggestion already rendered
+        // Dedup: skip only if last font_suggestion has same fonts.
         setMessages(prev => {
-          if (prev.some(m => m.type === 'font_suggestion')) return prev;
+          const lastFont = [...prev].reverse().find(m => m.type === 'font_suggestion');
+          if (lastFont && lastFont.heading === event.heading && lastFont.body === event.body) return prev;
           return [...prev, {
             type: 'font_suggestion',
             heading: event.heading, body: event.body,
@@ -684,6 +754,7 @@ export default function App() {
             firstAgentText={firstAgentText}
             openingData={openingData}
             onComplete={handleLaunchComplete}
+            getIsAudioPlaying={audioPlayback.getIsPlaying}
           />
         )}
       </AnimatePresence>
