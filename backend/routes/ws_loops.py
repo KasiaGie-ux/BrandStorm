@@ -382,20 +382,15 @@ async def receive_loop(
                                 "ASK if they like the new version."
                             )
                         else:
+                            # Agent should ONLY speak — acknowledge what changed and why.
+                            # The pending_regen_nudge in turn_complete fires the actual tool call.
+                            # This prevents the speech+tool combined turn that cuts off audio.
                             wrapped = (
                                 f"USER INPUT: {text}\n{_ctx}\n"
-                                "Classify the feedback:\n"
-                                "- LOGO complaint → call generate_image with asset_type 'logo' "
-                                "and a COMPLETELY DIFFERENT prompt. Do NOT change name, palette, or fonts.\n"
-                                "- COLOR/PALETTE complaint → call generate_palette with new colors. Keep everything else.\n"
-                                "- FONT/HEADING complaint → call suggest_fonts with different fonts. Keep everything else.\n"
-                                "- TAGLINE complaint → call reveal_brand_identity with a new tagline only. Keep name, story, values.\n"
-                                "- IMAGE complaint (hero, instagram) → regenerate ONLY that specific image.\n"
-                                "- VAGUE NEGATIVE → ASK what specifically to change. Do NOT guess.\n"
-                                "- NAME complaint (ONLY if they explicitly mention the name) → propose 3 new names.\n"
-                                "CRITICAL: Fix ONLY the thing complained about. Do NOT restart. Do NOT re-analyze. "
-                                "Do NOT change the name unless explicitly asked. Logo ≠ name. Colors ≠ name.\n"
-                                "After regenerating, ASK the user if they like the new version. STOP and WAIT."
+                                "The user has feedback. Acknowledge it briefly (1-2 sentences). "
+                                "Say what you'll change and why. "
+                                "CRITICAL: Do NOT call any tools. Just speak, then STOP. "
+                                "The system will trigger the correct tool automatically."
                             )
                     else:
                         wrapped = text
@@ -600,6 +595,9 @@ async def _dispatch_next_step(
     if _pending_tool_bg[0] > 0:
         logger.info(f"[{session.id}] Action: dispatch_deferred | Pending tools: {_pending_tool_bg[0]}")
         return
+    if session.voiceover_playing:
+        logger.info(f"[{session.id}] Action: dispatch_deferred | Voiceover playing")
+        return
     if session.zip_url:
         return
 
@@ -637,18 +635,17 @@ async def _dispatch_next_step(
         asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "post_analysis"))
 
     # ── AWAITING_NAME: name chosen, no tagline yet → REVEAL_SPEECH ───────────
+    # Guard: if the user already chose a name (brand_name set) and propose_names
+    # completed late (after user input), skip dispatching here entirely.
+    # The user-input path already set phase=REVEAL_SPEECH and sent a speech nudge,
+    # which will advance to REVEAL_TOOL on turn_complete. Adding another nudge here
+    # would cause duplicate speech or a skipped REVEAL_SPEECH turn.
     elif phase == AgentPhase.AWAITING_NAME and session.brand_name and not session.tagline:
-        brand_state.transition_phase(session, AgentPhase.REVEAL_SPEECH)
-        session.auto_continue_count += 1
-        nudge = (
-            f"The user chose the name '{session.brand_name}'. "
-            "Say a confident, product-specific comment about why this name fits "
-            "(reference what you see in the product photo). Max 2 sentences. "
-            "End with 'Let me build out the full brand identity.' "
-            "Do NOT call any tools. Just speak, then STOP."
+        logger.info(
+            f"[{session.id}] Action: dispatch_awaiting_name_skip | "
+            f"Brand already chosen: {session.brand_name} | "
+            f"REVEAL_TOOL nudge already in-flight from user-input path"
         )
-        logger.info(f"[{session.id}] Action: dispatch_reveal_speech | Turn: {turn_count}")
-        asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "reveal_speech"))
 
     # ── REVEAL_SPEECH done → call reveal_brand_identity ──────────────────────
     elif phase == AgentPhase.REVEAL_SPEECH:
@@ -661,17 +658,20 @@ async def _dispatch_next_step(
         logger.info(f"[{session.id}] Action: dispatch_reveal_tool | Turn: {turn_count}")
         asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "reveal_tool"))
 
-    # ── REVEAL_TOOL done, no palette → PALETTE_SPEECH ────────────────────────
+    # ── REVEAL_TOOL done, no palette → PALETTE_SPEECH + PALETTE_TOOL (combined) ─
+    # Send both nudges as a single turn: speak about palette, then immediately
+    # call the tool. This avoids the double-empty-turn race where two consecutive
+    # turn_complete events cause palette_speech and palette_tool nudges to be
+    # dispatched back-to-back before the agent processes either.
     elif phase == AgentPhase.REVEAL_TOOL and session.tagline and not session.palette:
-        brand_state.transition_phase(session, AgentPhase.PALETTE_SPEECH)
+        brand_state.transition_phase(session, AgentPhase.PALETTE_TOOL)
         session.auto_continue_count += 1
         nudge = (
-            "Say ONE sentence about the colors you see in the product and the "
-            "palette direction — mention a specific dominant hue or mood. "
-            "Do NOT use generic phrases. Do NOT call any tools. Just speak, then STOP."
+            "Say ONE sentence about the palette direction for this brand — mention a specific hue or mood. "
+            "Then immediately call generate_palette with 5 colors. Do NOT wait."
         )
-        logger.info(f"[{session.id}] Action: dispatch_palette_speech | Turn: {turn_count}")
-        asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "palette_speech"))
+        logger.info(f"[{session.id}] Action: dispatch_palette_combined | Turn: {turn_count}")
+        asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "palette_combined"))
 
     # ── PALETTE_SPEECH done → call generate_palette ───────────────────────────
     elif phase == AgentPhase.PALETTE_SPEECH:
@@ -853,6 +853,7 @@ async def agent_loop(
 
             while session_active:
                 turn_count += 1
+                _tool_called_this_turn = False
                 logger.info(f"[{session.id}] Action: waiting_for_live_api_message | Turn: {turn_count}")
 
                 async for message in live_session.receive():
@@ -868,13 +869,11 @@ async def agent_loop(
                     # Server content: audio, text, transcription
                     if message.server_content:
                         sc = message.server_content
-                        _got_text_this_msg = False
-
                         if sc.model_turn and sc.model_turn.parts:
                             for part in sc.model_turn.parts:
                                 if part.inline_data and part.inline_data.mime_type.startswith("audio/"):
-                                    # Suppress agent audio while Anna is narrating
-                                    if session.voiceover_playing:
+                                    # Suppress agent audio while Anna is narrating or interrupt active
+                                    if session.voiceover_playing or session.interrupt_text:
                                         logger.info(
                                             f"[{session.id}] Action: suppress_audio_during_voiceover"
                                         )
@@ -885,32 +884,28 @@ async def agent_loop(
                                             "mime_type": part.inline_data.mime_type,
                                         })
                                 elif hasattr(part, "text") and part.text:
-                                    if session.voiceover_playing:
-                                        logger.info(
-                                            f"[{session.id}] Action: suppress_text_during_voiceover"
-                                        )
-                                    else:
-                                        _got_text_this_msg = True
-                                        agent_text_buffer.append(part.text)
-                                        await send_json(ws, {
-                                            "type": "agent_text",
-                                            "text": part.text,
-                                            "partial": True,
-                                        })
+                                    # SKIP model_turn text — use output_transcription instead.
+                                    # Native audio model generates both text and audio in parallel,
+                                    # but they often say slightly different things, causing duplicates.
+                                    # output_transcription is the accurate version of what was spoken.
+                                    pass
 
-                        # output_transcription is the textual version of audio.
-                        # Only use it if we didn't already get text from model_turn
-                        # to avoid duplicating the same content.
+                        # output_transcription — the ONLY text source for native audio.
+                        # Skip emitting a partial when turn_complete is also set on this
+                        # message — the turn_complete flush sends partial=False with the
+                        # full buffer, so emitting a partial here first would cause the
+                        # frontend to see the last sentence twice.
                         if (sc.output_transcription and sc.output_transcription.text
-                                and not _got_text_this_msg
-                                and not session.voiceover_playing):
+                                and not session.voiceover_playing
+                                and not session.interrupt_text):
                             text = sc.output_transcription.text
                             agent_text_buffer.append(text)
-                            await send_json(ws, {
-                                "type": "agent_text",
-                                "text": text,
-                                "partial": True,
-                            })
+                            if not sc.turn_complete:
+                                await send_json(ws, {
+                                    "type": "agent_text",
+                                    "text": text,
+                                    "partial": True,
+                                })
 
                         if sc.turn_complete:
                             full_text = " ".join(chunk for chunk in agent_text_buffer if chunk.strip())
@@ -937,10 +932,23 @@ async def agent_loop(
                                         "partial": False,
                                     })
                             elif full_text.strip():
-                                await _flush_and_emit(
-                                    ws, session, full_text, seen_event_types,
-                                    pregen=pregen, emit_cb=_emit_cb,
-                                )
+                                if _tool_called_this_turn:
+                                    # Tool executor already emitted structured events via emit_cb.
+                                    # Don't re-parse text for tags — just close the partial with
+                                    # the spoken narration (no structured event extraction).
+                                    # Strip any raw tags from transcription before displaying.
+                                    _, clean_narration = parse_agent_text(full_text, seen_types=seen_event_types)
+                                    await send_json(ws, {
+                                        "type": "agent_text",
+                                        "text": clean_narration or "",
+                                        "partial": False,
+                                    })
+                                    session.add_transcript("agent", full_text)
+                                else:
+                                    await _flush_and_emit(
+                                        ws, session, full_text, seen_event_types,
+                                        pregen=pregen, emit_cb=_emit_cb,
+                                    )
                             else:
                                 # Close any dangling partial on frontend
                                 await send_json(ws, {
@@ -1055,6 +1063,14 @@ async def agent_loop(
                             # _dispatch_next_step can route based on micro-phase.
                             if session.phase == AgentPhase.GENERATING:
                                 brand_state.transition_phase(session, AgentPhase.AWAITING_INPUT)
+                            # After propose_names, phase stays AWAITING_NAME even while agent
+                            # speaks REVEAL_SPEECH. Normalize to REVEAL_TOOL so dispatch
+                            # knows the speech turn is done and the tool nudge is in-flight.
+                            elif (session.phase == AgentPhase.AWAITING_NAME
+                                    and session.brand_name
+                                    and not session.tagline
+                                    and full_text.strip()):
+                                brand_state.transition_phase(session, AgentPhase.REVEAL_TOOL)
 
                             logger.info(f"[{session.id}] Action: turn_complete | Turn: {turn_count} | Msgs: {msg_count}")
                             await send_json(ws, {
@@ -1100,21 +1116,23 @@ async def agent_loop(
                                 break
 
                             # State-machine dispatch — speech and tool turns are always separate.
-                            await _dispatch_next_step(session, live_session, ws, turn_count, _pending_tool_bg)
+                            # Skip dispatch on empty turns: agent acknowledged a nudge without
+                            # speaking. _wait_and_nudge already has the next nudge scheduled —
+                            # dispatching again here would send a duplicate nudge.
+                            if full_text.strip():
+                                await _dispatch_next_step(session, live_session, ws, turn_count, _pending_tool_bg)
 
                             break
 
                     # Tool calls from agent
                     if message.tool_call:
+                        _tool_called_this_turn = True
                         for fc in message.tool_call.function_calls:
-                            # ── 1. Flush any buffered agent text ──
-                            buffered = " ".join(chunk for chunk in agent_text_buffer if chunk.strip())
-                            if buffered:
-                                await _flush_and_emit(
-                                    ws, session, buffered, seen_event_types,
-                                    pregen=pregen, emit_cb=_emit_cb,
-                                )
-                                agent_text_buffer.clear()
+                            # NOTE: Do NOT flush agent_text_buffer here.
+                            # In combined speech+tool turns, transcription chunks arrive
+                            # before AND after the tool_call message. Flushing mid-turn
+                            # splits them into two separate chat messages (duplicate text).
+                            # turn_complete handles all text at once.
 
                             brand_state.infer_phase_from_tool(session, fc.name)
 
@@ -1196,11 +1214,23 @@ async def agent_loop(
                                     # immediately, Live API stops the agent's current audio
                                     # mid-sentence to start processing the tool result.
                                     # Slow tools (generate_image) take 5-15s so audio is done.
+                                    #
+                                    # IMPORTANT: only wait if this turn actually has audio.
+                                    # TOOL-only phases (no preceding speech) never produce audio,
+                                    # so waiting would deadlock — frontend_ready is never set
+                                    # because audio_playback_done never fires.
                                     _FAST_TOOLS = {
                                         "reveal_brand_identity", "suggest_fonts",
                                         "generate_palette", "propose_names",
                                     }
-                                    if _fc.name in _FAST_TOOLS:
+                                    # Phases where the agent goes straight to a tool call
+                                    # without a speech preamble — no audio in this turn.
+                                    _TOOL_ONLY_PHASES = {
+                                        AgentPhase.REVEAL_TOOL, AgentPhase.PALETTE_TOOL,
+                                        AgentPhase.FONTS_TOOL, AgentPhase.IMAGE_TOOL,
+                                        AgentPhase.VOICEOVER_TOOL, AgentPhase.PROPOSING,
+                                    }
+                                    if _fc.name in _FAST_TOOLS and session.phase not in _TOOL_ONLY_PHASES:
                                         if not hasattr(session, "frontend_ready"):
                                             session.frontend_ready = asyncio.Event()
                                         session.frontend_ready.clear()
@@ -1286,6 +1316,39 @@ async def agent_loop(
                                     )
                                 finally:
                                     _pending_tool_bg[0] -= 1
+                                    if _pending_tool_bg[0] == 0:
+                                        # Skip dispatch after propose_names when the user
+                                        # already chose a name — a REVEAL_TOOL nudge is
+                                        # already in-flight from the user-input path.
+                                        # Dispatching again would send a duplicate nudge
+                                        # and cause the REVEAL_SPEECH text to appear twice.
+                                        _skip_dispatch = (
+                                            _fc.name == "propose_names"
+                                            and session.brand_name
+                                            and session.phase in (
+                                                AgentPhase.REVEAL_TOOL,
+                                                AgentPhase.REVEAL_SPEECH,
+                                            )
+                                        )
+                                        if _skip_dispatch:
+                                            logger.info(
+                                                f"[{session.id}] Action: dispatch_skip_after_propose | "
+                                                f"Phase: {session.phase.value} | "
+                                                f"Brand already chosen: {session.brand_name}"
+                                            )
+                                        else:
+                                            logger.info(
+                                                f"[{session.id}] Action: dispatch_retry_after_tool | "
+                                                f"Tool: {_fc.name} | Phase: {session.phase.value}"
+                                            )
+                                            try:
+                                                await _dispatch_next_step(
+                                                    session, live_session, ws, turn_count, _pending_tool_bg
+                                                )
+                                            except Exception as e:
+                                                logger.error(
+                                                    f"[{session.id}] Action: dispatch_retry_failed | Error: {e}"
+                                                )
 
                             asyncio.create_task(_tool_background(), name=f"tool-bg-{fc.name}")
 

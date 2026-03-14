@@ -273,10 +273,9 @@ function HiddenAudio({ audioUrl }) {
     window.addEventListener('voiceover-stop', onStop);
     // Wait for handoff audio to finish before playing greeting
     window.addEventListener('voiceover-handoff-ended', startPlay);
-    // Fallback: auto-play after 2s if no handoff audio preceded this
-    const fallback = setTimeout(() => { if (a.paused) startPlay(); }, 2000);
+    // If handoff already fired before this component mounted, start immediately
+    if (window._voiceoverHandoffDone) startPlay();
     return () => {
-      clearTimeout(fallback);
       a.removeEventListener('ended', onEnd);
       window.removeEventListener('voiceover-stop', onStop);
       window.removeEventListener('voiceover-handoff-ended', startPlay);
@@ -292,7 +291,8 @@ function ChatHandoffText({ text, audioUrl }) {
   useEffect(() => {
     if (!audioUrl) {
       // No handoff TTS — agent already said this via Live API.
-      // Signal immediately so Anna's greeting can start.
+      // Set flag so HiddenAudio can check it synchronously on mount.
+      window._voiceoverHandoffDone = true;
       window.dispatchEvent(new CustomEvent('voiceover-handoff-ended'));
       return;
     }

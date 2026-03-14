@@ -185,7 +185,7 @@ class ToolExecutor:
             )
             result = {
                 "status": "success",
-                "message": "Name proposals already displayed. Wait for user to pick one.",
+                "message": "Names displayed. Do NOT speak. Wait for user selection.",
                 "names": [n["name"] for n in pregen],
             }
             return result, None  # don't re-emit — already sent to frontend
@@ -217,7 +217,7 @@ class ToolExecutor:
         }
         result = {
             "status": "success",
-            "message": "Name proposals displayed. Wait for user to pick one.",
+            "message": "Names displayed. Do NOT speak. Wait for user selection.",
             "names": [n["name"] for n in validated],
         }
         return result, event
@@ -277,7 +277,7 @@ class ToolExecutor:
         result = {
             "status": "success",
             "brand_name": brand_name,
-            "message": "Brand identity revealed. Now call generate_palette.",
+            "message": "Brand identity revealed. Do NOT speak.",
         }
         return result, last_event
 
@@ -309,7 +309,7 @@ class ToolExecutor:
         }
         result = {
             "status": "success",
-            "message": "Fonts displayed. Now generate images starting with the logo.",
+            "message": "Fonts displayed. Do NOT speak.",
         }
         return result, event
 
@@ -565,11 +565,7 @@ class ToolExecutor:
 
         result = {
             "status": "success",
-            "message": (
-                "Palette displayed. Now say ONE sentence about the color story, "
-                "then IMMEDIATELY call suggest_fonts with heading and body fonts. "
-                "Do NOT mention logo or images yet."
-            ),
+            "message": "Palette displayed. Do NOT speak.",
             "mood": mood,
             "style_anchor": style_anchor,
             "product_colors": product_colors,
@@ -763,6 +759,7 @@ class ToolExecutor:
             "brand_name": session.brand_name,
             "assets_count": len(session.completed_assets),
             "zip_url": zip_url,
+            "message": "Brand kit finalized. Do NOT speak.",
         }
         event = {
             "type": "generation_complete",

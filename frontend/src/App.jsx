@@ -294,30 +294,30 @@ export default function App() {
           const outputText = stripKnownIntro(event.text);
           setMessages(prev => {
             if (!outputText.trim()) {
-              // Just close any dangling partial
-              const last = prev[prev.length - 1];
-              if (last && last.type === 'agent_text' && last._partial) {
-                const updated = [...prev];
-                updated[updated.length - 1] = { ...last, _partial: false };
-                return updated;
+              // Close any dangling partial — search backwards past spinners
+              for (let i = prev.length - 1; i >= 0; i--) {
+                const m = prev[i];
+                if (m.type === 'user' || m.type === 'agent_turn_complete') break;
+                if (m.type === 'agent_text' && m._partial) {
+                  const updated = [...prev];
+                  updated[i] = { ...m, _partial: false };
+                  return updated;
+                }
               }
               return prev;
             }
-            const last = prev[prev.length - 1];
-            if (last && last.type === 'agent_text' && last._partial) {
-              const updated = [...prev];
-              updated[updated.length - 1] = { ...last, text: outputText, _partial: false };
-              return updated;
-            }
+            // First pass: find a dangling _partial: true bubble (may be buried under
+            // tool_invoked spinners). Always prefer that over any finalized bubble.
             for (let i = prev.length - 1; i >= 0; i--) {
               const m = prev[i];
               if (m.type === 'user' || m.type === 'agent_turn_complete') break;
-              if (m.type === 'agent_text') {
+              if (m.type === 'agent_text' && m._partial) {
                 const updated = [...prev];
                 updated[i] = { ...m, text: outputText, _partial: false };
                 return updated;
               }
             }
+            // No partial found — add as new message (don't stomp a finalized bubble).
             return [...prev, { type: 'agent_text', text: outputText, _partial: false, _id: ++msgIdCounter.current }];
           });
         }
@@ -455,6 +455,7 @@ export default function App() {
         // voiceover_handoff is in VISUAL_TYPES so the event queue holds it
         // while Charon's audio plays. By the time this case runs, audio is
         // already finished — fire Anna's cue immediately.
+        window._voiceoverHandoffDone = true;
         window.dispatchEvent(new CustomEvent('voiceover-handoff-ended'));
         break;
 
@@ -524,6 +525,7 @@ export default function App() {
     firstTextCaptured.current = false;
     launchTextRef.current = '';
     launchIntroRef.current = null;
+    window._voiceoverHandoffDone = false;
     pendingResumeRef.current = null;
     awaitingFirstConnect.current = true;
     generationDoneRef.current = false;
