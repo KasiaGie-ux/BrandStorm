@@ -37,7 +37,7 @@ USE_GCS = os.getenv("USE_GCS", "false").lower() == "true"
 # Developer API fallback (when Vertex AI image gen fails completely)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 USE_DEVELOPER_API_FALLBACK = os.getenv("USE_DEVELOPER_API_FALLBACK", "true").lower() == "true"
-DEVELOPER_API_IMAGE_MODEL = os.getenv("DEVELOPER_API_IMAGE_MODEL", "gemini-3-pro-image-preview")
+DEVELOPER_API_IMAGE_MODEL = os.getenv("DEVELOPER_API_IMAGE_MODEL", "gemini-2.5-flash-image")
 
 # Debug mode: skip Vertex AI entirely for images, go straight to Developer API (api_key).
 # Set DEBUG_API_KEY_ONLY=true in .env when running locally without ADC credentials.

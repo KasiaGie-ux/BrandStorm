@@ -306,15 +306,38 @@ async def receive_loop(
                     ]
                     _is_delegation = any(s in _lower for s in _delegation_signals)
 
-                    # During active brand flow (any phase after name chosen),
+                    # --- User just chose a name → agent must speak comment, no tools ---
+                    # Applies when brand_name is set but tagline isn't yet (post-name-choice),
+                    # and the phase is AWAITING_NAME / AWAITING_INPUT / PROPOSING.
+                    _name_chosen_phases = {
+                        AgentPhase.AWAITING_NAME,
+                        AgentPhase.AWAITING_INPUT,
+                        AgentPhase.PROPOSING,
+                    }
+                    if (
+                        session.brand_name
+                        and not session.tagline
+                        and session.phase in _name_chosen_phases
+                    ):
+                        brand_state.transition_phase(session, AgentPhase.REVEAL_SPEECH)
+                        wrapped = (
+                            f"USER INPUT: {text}\n"
+                            f"The user chose the brand name '{session.brand_name}'. "
+                            f"Say a confident, specific comment about why this name fits — "
+                            f"reference what you see in the product photo. Max 2 sentences. "
+                            f"End with something like 'Let me build out the full brand identity for you.' "
+                            f"CRITICAL: Do NOT call any tools. Do NOT call reveal_brand_identity. "
+                            f"Just speak your comment, then STOP."
+                        )
+
+                    # During active brand flow (any phase after full brand exists),
                     # wrap user text so agent classifies feedback properly
-                    _feedback_phases = {
+                    elif session.phase in {
                         AgentPhase.AWAITING_INPUT,
                         AgentPhase.COMPLETE,
                         AgentPhase.REFINING,
                         AgentPhase.GENERATING,
-                    }
-                    if session.phase in _feedback_phases and session.brand_name:
+                    } and session.brand_name:
                         # Build context about what exists
                         _done = ", ".join(session.completed_assets) if session.completed_assets else "none"
                         _has_palette = "yes" if session.palette else "no"
@@ -555,6 +578,253 @@ async def receive_loop(
         logger.error(f"[{session.id}] Action: receive_loop_error | Error: {e}")
 
 
+async def _dispatch_next_step(
+    session: "Session",
+    live_session: object,
+    ws: "WebSocket",
+    turn_count: int,
+    _pending_tool_bg: list,
+) -> None:
+    """State-machine driven auto-continue.
+
+    Speech and tool calls are always dispatched as SEPARATE turns so the model
+    never speaks and calls a tool simultaneously (which cuts off audio when the
+    fast tool_response arrives before audio generation finishes).
+
+    Each _SPEECH phase tells the agent: "speak X, do NOT call any tools, STOP."
+    Each _TOOL phase tells the agent: "call X tool, do NOT speak."
+    """
+    # Guards
+    if session.interrupt_text or session.awaiting_feedback or session.pending_regen:
+        return
+    if _pending_tool_bg[0] > 0:
+        logger.info(f"[{session.id}] Action: dispatch_deferred | Pending tools: {_pending_tool_bg[0]}")
+        return
+    if session.zip_url:
+        return
+
+    phase = session.phase
+    _MAX = 8
+
+    if session.auto_continue_count >= _MAX:
+        if session.brand_name and not session.zip_url:
+            logger.warning(f"[{session.id}] Action: dispatch_exhausted | Attempts: {session.auto_continue_count}")
+        return
+
+    # ── ANALYSIS_SPEECH → AWAITING_NAME (pregen) or PROPOSING (fallback) ────
+    if phase == AgentPhase.ANALYSIS_SPEECH:
+        session.auto_continue_count += 1
+        pregen_names = getattr(session, "_pregen_names", None)
+        if pregen_names:
+            # Names were pre-generated in parallel. Tell Live API what they are
+            # for conversation context, then wait for user choice.
+            brand_state.transition_phase(session, AgentPhase.AWAITING_NAME)
+            names_text = ", ".join(f"'{n['name']}'" for n in pregen_names)
+            nudge = (
+                f"You proposed these brand names: {names_text}. "
+                f"The user is choosing now. Wait for their selection. "
+                f"Do NOT speak. Do NOT call any tools."
+            )
+            logger.info(f"[{session.id}] Action: dispatch_awaiting_name_pregen | Turn: {turn_count}")
+        else:
+            # Fallback: pre-gen failed, ask Live API to call propose_names tool
+            brand_state.transition_phase(session, AgentPhase.PROPOSING)
+            nudge = (
+                "Now call propose_names with 3 brand name options. "
+                "Do NOT speak. Just call the tool immediately."
+            )
+            logger.info(f"[{session.id}] Action: dispatch_propose_names_fallback | Turn: {turn_count}")
+        asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "post_analysis"))
+
+    # ── AWAITING_NAME: name chosen, no tagline yet → REVEAL_SPEECH ───────────
+    elif phase == AgentPhase.AWAITING_NAME and session.brand_name and not session.tagline:
+        brand_state.transition_phase(session, AgentPhase.REVEAL_SPEECH)
+        session.auto_continue_count += 1
+        nudge = (
+            f"The user chose the name '{session.brand_name}'. "
+            "Say a confident, product-specific comment about why this name fits "
+            "(reference what you see in the product photo). Max 2 sentences. "
+            "End with 'Let me build out the full brand identity.' "
+            "Do NOT call any tools. Just speak, then STOP."
+        )
+        logger.info(f"[{session.id}] Action: dispatch_reveal_speech | Turn: {turn_count}")
+        asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "reveal_speech"))
+
+    # ── REVEAL_SPEECH done → call reveal_brand_identity ──────────────────────
+    elif phase == AgentPhase.REVEAL_SPEECH:
+        brand_state.transition_phase(session, AgentPhase.REVEAL_TOOL)
+        session.auto_continue_count += 1
+        nudge = (
+            "Now call reveal_brand_identity with brand_name, tagline, brand_story, "
+            "brand_values, and tone_of_voice_do/dont. Do NOT speak. Just call the tool."
+        )
+        logger.info(f"[{session.id}] Action: dispatch_reveal_tool | Turn: {turn_count}")
+        asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "reveal_tool"))
+
+    # ── REVEAL_TOOL done, no palette → PALETTE_SPEECH ────────────────────────
+    elif phase == AgentPhase.REVEAL_TOOL and session.tagline and not session.palette:
+        brand_state.transition_phase(session, AgentPhase.PALETTE_SPEECH)
+        session.auto_continue_count += 1
+        nudge = (
+            "Say ONE sentence about the colors you see in the product and the "
+            "palette direction — mention a specific dominant hue or mood. "
+            "Do NOT use generic phrases. Do NOT call any tools. Just speak, then STOP."
+        )
+        logger.info(f"[{session.id}] Action: dispatch_palette_speech | Turn: {turn_count}")
+        asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "palette_speech"))
+
+    # ── PALETTE_SPEECH done → call generate_palette ───────────────────────────
+    elif phase == AgentPhase.PALETTE_SPEECH:
+        brand_state.transition_phase(session, AgentPhase.PALETTE_TOOL)
+        session.auto_continue_count += 1
+        nudge = (
+            "Now call generate_palette with 5 colors. "
+            "Do NOT speak. Just call the tool."
+        )
+        logger.info(f"[{session.id}] Action: dispatch_palette_tool | Turn: {turn_count}")
+        asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "palette_tool"))
+
+    # ── PALETTE_TOOL done, no fonts → FONTS_SPEECH ───────────────────────────
+    elif phase == AgentPhase.PALETTE_TOOL and session.palette and not session.font_suggestion:
+        brand_state.transition_phase(session, AgentPhase.FONTS_SPEECH)
+        session.auto_continue_count += 1
+        nudge = (
+            "Say ONE sentence connecting typography to this brand's personality — "
+            "mention the feeling you want or how it complements the palette. "
+            "Do NOT use generic phrases. Do NOT call any tools. Just speak, then STOP."
+        )
+        logger.info(f"[{session.id}] Action: dispatch_fonts_speech | Turn: {turn_count}")
+        asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "fonts_speech"))
+
+    # ── FONTS_SPEECH done → call suggest_fonts ────────────────────────────────
+    elif phase == AgentPhase.FONTS_SPEECH:
+        brand_state.transition_phase(session, AgentPhase.FONTS_TOOL)
+        session.auto_continue_count += 1
+        nudge = (
+            "Now call suggest_fonts with heading and body fonts. "
+            "Do NOT speak. Just call the tool."
+        )
+        logger.info(f"[{session.id}] Action: dispatch_fonts_tool | Turn: {turn_count}")
+        asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "fonts_tool"))
+
+    # ── FONTS_TOOL or IMAGE_TOOL done → next image or closing ─────────────────
+    elif phase in (AgentPhase.FONTS_TOOL, AgentPhase.IMAGE_TOOL):
+        remaining_types = [
+            a for a in ["logo", "hero_lifestyle", "instagram_post"]
+            if a not in session.completed_assets
+        ]
+        if remaining_types:
+            next_asset = remaining_types[0]
+            label = {"logo": "logo", "hero_lifestyle": "lifestyle hero",
+                     "instagram_post": "Instagram post"}.get(next_asset, next_asset)
+            brand_state.transition_phase(session, AgentPhase.IMAGE_SPEECH)
+            session.auto_continue_count += 1
+            nudge = (
+                f"Say ONE sentence teasing the creative direction for the {label} — "
+                f"reference the brand's palette or mood. Be specific. "
+                f"Do NOT call any tools. Just speak, then STOP."
+            )
+            logger.info(f"[{session.id}] Action: dispatch_image_speech | Asset: {next_asset} | Turn: {turn_count}")
+            asyncio.create_task(_wait_and_nudge(session, live_session, nudge, f"image_speech:{next_asset}"))
+        elif not session.voiceover_sent:
+            brand_state.transition_phase(session, AgentPhase.VOICEOVER_SPEECH)
+            session.auto_continue_count += 1
+            nudge = (
+                "All brand assets are complete. "
+                "Say ONE sentence that ties the creative journey together and introduces Anna "
+                "who will narrate the brand story — weave in something specific about THIS brand. "
+                "Do NOT call any tools. Just speak, then STOP."
+            )
+            logger.info(f"[{session.id}] Action: dispatch_voiceover_speech | Turn: {turn_count}")
+            asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "voiceover_speech"))
+
+    # ── IMAGE_SPEECH done → call generate_image ───────────────────────────────
+    elif phase == AgentPhase.IMAGE_SPEECH:
+        remaining_types = [
+            a for a in ["logo", "hero_lifestyle", "instagram_post"]
+            if a not in session.completed_assets
+        ]
+        if remaining_types:
+            next_asset = remaining_types[0]
+            brand_state.transition_phase(session, AgentPhase.IMAGE_TOOL)
+            session.auto_continue_count += 1
+            nudge = (
+                f"Now call generate_image with asset_type '{next_asset}'. "
+                f"Do NOT speak. Just call the tool."
+            )
+            logger.info(f"[{session.id}] Action: dispatch_image_tool | Asset: {next_asset} | Turn: {turn_count}")
+            asyncio.create_task(_wait_and_nudge(session, live_session, nudge, f"image_tool:{next_asset}"))
+
+    # ── VOICEOVER_SPEECH done → call generate_voiceover ──────────────────────
+    elif phase == AgentPhase.VOICEOVER_SPEECH:
+        brand_state.transition_phase(session, AgentPhase.VOICEOVER_TOOL)
+        session.auto_continue_count += 1
+        nudge = (
+            "Now call generate_voiceover with ALL FOUR parameters:\n"
+            "- handoff_text: one sentence handing over to Anna (brand-specific)\n"
+            "- greeting_text: Anna's short self-introduction, 1-2 sentences\n"
+            "- narration_text: Anna's full brand story narration — story ONLY, no greeting\n"
+            "- mood: brand mood\n"
+            "Do NOT speak. Call the tool immediately."
+        )
+        logger.info(f"[{session.id}] Action: dispatch_voiceover_tool | Turn: {turn_count}")
+        asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "voiceover_tool"))
+
+    # ── Legacy AWAITING_INPUT fallback for user-interrupt recovery ────────────
+    elif phase == AgentPhase.AWAITING_INPUT and session.brand_name and not session.zip_url:
+        # Determine what to do next based on session state
+        remaining_types = [
+            a for a in ["logo", "hero_lifestyle", "instagram_post"]
+            if a not in session.completed_assets
+        ]
+        if not session.tagline:
+            brand_state.transition_phase(session, AgentPhase.REVEAL_SPEECH)
+            session.auto_continue_count += 1
+            nudge = (
+                f"The user chose the name '{session.brand_name}'. "
+                "Say a confident comment about why this name fits (max 2 sentences). "
+                "End with 'Let me build out the full brand identity.' "
+                "Do NOT call any tools. Just speak, then STOP."
+            )
+            asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "reveal_speech_recovery"))
+        elif not session.palette:
+            brand_state.transition_phase(session, AgentPhase.PALETTE_SPEECH)
+            session.auto_continue_count += 1
+            nudge = (
+                "Say ONE sentence about the palette direction — mention a specific hue or mood. "
+                "Do NOT call any tools. Just speak, then STOP."
+            )
+            asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "palette_speech_recovery"))
+        elif not session.font_suggestion:
+            brand_state.transition_phase(session, AgentPhase.FONTS_SPEECH)
+            session.auto_continue_count += 1
+            nudge = (
+                "Say ONE sentence connecting typography to this brand's personality. "
+                "Do NOT call any tools. Just speak, then STOP."
+            )
+            asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "fonts_speech_recovery"))
+        elif remaining_types:
+            next_asset = remaining_types[0]
+            label = {"logo": "logo", "hero_lifestyle": "lifestyle hero",
+                     "instagram_post": "Instagram post"}.get(next_asset, next_asset)
+            brand_state.transition_phase(session, AgentPhase.IMAGE_SPEECH)
+            session.auto_continue_count += 1
+            nudge = (
+                f"Say ONE sentence teasing the creative direction for the {label}. "
+                f"Do NOT call any tools. Just speak, then STOP."
+            )
+            asyncio.create_task(_wait_and_nudge(session, live_session, nudge, f"image_speech_recovery:{next_asset}"))
+        elif not session.voiceover_sent:
+            brand_state.transition_phase(session, AgentPhase.VOICEOVER_SPEECH)
+            session.auto_continue_count += 1
+            nudge = (
+                "Say ONE sentence introducing Anna who will narrate the brand story. "
+                "Do NOT call any tools. Just speak, then STOP."
+            )
+            asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "voiceover_speech_recovery"))
+        logger.info(f"[{session.id}] Action: dispatch_awaiting_input_recovery | Phase: {phase} | Turn: {turn_count}")
+
+
 async def agent_loop(
     ws: WebSocket,
     live_session: object,
@@ -615,19 +885,25 @@ async def agent_loop(
                                             "mime_type": part.inline_data.mime_type,
                                         })
                                 elif hasattr(part, "text") and part.text:
-                                    _got_text_this_msg = True
-                                    agent_text_buffer.append(part.text)
-                                    await send_json(ws, {
-                                        "type": "agent_text",
-                                        "text": part.text,
-                                        "partial": True,
-                                    })
+                                    if session.voiceover_playing:
+                                        logger.info(
+                                            f"[{session.id}] Action: suppress_text_during_voiceover"
+                                        )
+                                    else:
+                                        _got_text_this_msg = True
+                                        agent_text_buffer.append(part.text)
+                                        await send_json(ws, {
+                                            "type": "agent_text",
+                                            "text": part.text,
+                                            "partial": True,
+                                        })
 
                         # output_transcription is the textual version of audio.
                         # Only use it if we didn't already get text from model_turn
                         # to avoid duplicating the same content.
                         if (sc.output_transcription and sc.output_transcription.text
-                                and not _got_text_this_msg):
+                                and not _got_text_this_msg
+                                and not session.voiceover_playing):
                             text = sc.output_transcription.text
                             agent_text_buffer.append(text)
                             await send_json(ws, {
@@ -675,22 +951,19 @@ async def agent_loop(
                             agent_text_buffer.clear()
 
                             if session.phase == AgentPhase.ANALYZING:
-                                # Opening sequence done → nudge for analysis speech (NO tool call yet)
-                                brand_state.transition_phase(session, AgentPhase.PROPOSING)
-                                logger.info(f"[{session.id}] Action: turn_complete_opening | Turn: {turn_count}")
+                                # Opening turn complete → agent speaks analysis (SPEECH only, no tools)
+                                brand_state.transition_phase(session, AgentPhase.ANALYSIS_SPEECH)
                                 await send_json(ws, {
                                     "type": "agent_turn_complete",
                                     "phase": session.phase.value,
                                 })
-                                # Turn A: speak analysis + direction + transition line — NO tool call
                                 nudge = (
                                     "Now analyze the product photo. "
                                     "Say what you see (2 sentences, cite specific visual evidence). "
                                     "Then pick ONE creative direction (1 sentence). "
                                     "Then say a creative transition line for the names (1 sentence, varied). "
-                                    "Do NOT call any tool yet. Just speak."
+                                    "Do NOT call any tools. Just speak, then STOP."
                                 )
-                                session._propose_nudge_pending = True
                                 logger.info(f"[{session.id}] Action: auto_nudge_analysis_speech | Turn: {turn_count}")
                                 await live_session.send_client_content(
                                     turns=[types.Content(
@@ -699,18 +972,88 @@ async def agent_loop(
                                     )],
                                     turn_complete=True,
                                 )
+
+                                # --- PARALLEL: pre-generate name proposals via text model ---
+                                # Cards appear on frontend while agent is still speaking analysis.
+                                # When analysis audio ends, countdown starts.
+                                async def _pregen_names(_ws=ws, _session=session):
+                                    try:
+                                        from services.gemini_live import create_client as _cc
+                                        _tc = _cc()
+
+                                        _img_part = types.Part.from_bytes(
+                                            data=_session.product_image_bytes,
+                                            mime_type=_session.product_image_mime or "image/jpeg",
+                                        )
+
+                                        _prompt = (
+                                            "You are an elite creative director naming a brand based on this product photo.\n"
+                                            "Respond with ONLY this JSON, no markdown:\n"
+                                            '{"names": [\n'
+                                            '  {"name": "...", "rationale": "...", "recommended": true},\n'
+                                            '  {"name": "...", "rationale": "..."},\n'
+                                            '  {"name": "...", "rationale": "..."}\n'
+                                            ']}\n\n'
+                                            "Rules:\n"
+                                            "- EXACTLY 3 names, each 1-2 words\n"
+                                            "- Each name uses a DIFFERENT creative approach: "
+                                            "one abstract/invented, one evocative/emotional, one descriptive/poetic\n"
+                                            "- Rationale: 1 sentence explaining the name's connection to the product\n"
+                                            "- Mark ONE as recommended: true\n"
+                                            "- Names must be original, ownable, memorable\n"
+                                            "- Ground every name in specific visual evidence from the photo"
+                                        )
+
+                                        _resp = await _tc.aio.models.generate_content(
+                                            model="gemini-2.5-flash",
+                                            contents=[_img_part, _prompt],
+                                            config=types.GenerateContentConfig(
+                                                response_mime_type="application/json",
+                                            ),
+                                        )
+
+                                        _text = _resp.text.strip()
+                                        if _text.startswith("```"):
+                                            _text = _text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+                                        _data = json.loads(_text)
+                                        _raw_names = _data.get("names", [])
+
+                                        validated = []
+                                        for i, n in enumerate(_raw_names[:3]):
+                                            if isinstance(n, dict) and n.get("name"):
+                                                entry = {
+                                                    "id": i + 1,
+                                                    "name": n["name"],
+                                                    "rationale": n.get("rationale", ""),
+                                                }
+                                                if n.get("recommended"):
+                                                    entry["recommended"] = True
+                                                validated.append(entry)
+
+                                        if validated:
+                                            # Send cards to frontend — appear while agent speaks
+                                            await send_json(_ws, {
+                                                "type": "name_proposals",
+                                                "names": validated,
+                                                "auto_select_seconds": 10,
+                                            })
+                                            # Store on session so _dispatch_next_step can use them
+                                            _session._pregen_names = validated
+                                            logger.info(
+                                                f"[{_session.id}] Action: pregen_names_sent | "
+                                                f"Names: {[n['name'] for n in validated]}"
+                                            )
+                                    except Exception as e:
+                                        logger.warning(
+                                            f"[{session.id}] Action: pregen_names_failed | Error: {e}"
+                                        )
+
+                                asyncio.create_task(_pregen_names(), name="pregen-names")
                                 break
-                            elif getattr(session, '_propose_nudge_pending', False):
-                                # Turn B: agent finished speaking analysis → now call the tool
-                                session._propose_nudge_pending = False
-                                logger.info(f"[{session.id}] Action: auto_nudge_propose_tool (queued) | Turn: {turn_count}")
-                                asyncio.create_task(_wait_and_nudge(
-                                    session, live_session,
-                                    "Now call propose_names with 3 brand name options.",
-                                    "propose_names",
-                                ))
-                                break
-                            elif session.phase in (AgentPhase.GENERATING, AgentPhase.PROPOSING):
+
+                            # Normalise legacy GENERATING/PROPOSING → AWAITING_INPUT so
+                            # _dispatch_next_step can route based on micro-phase.
+                            if session.phase == AgentPhase.GENERATING:
                                 brand_state.transition_phase(session, AgentPhase.AWAITING_INPUT)
 
                             logger.info(f"[{session.id}] Action: turn_complete | Turn: {turn_count} | Msgs: {msg_count}")
@@ -719,9 +1062,7 @@ async def agent_loop(
                                 "phase": session.phase.value,
                             })
 
-                            # --- Pending-regen nudge ---
-                            # Agent finished a text-only turn but hasn't executed the
-                            # corrective tool call yet. Nudge it to actually do the fix.
+                            # --- Pending-regen nudge (user asked to change something) ---
                             if (session.pending_regen
                                     and session.phase == AgentPhase.AWAITING_INPUT
                                     and session.auto_continue_count < 3
@@ -758,124 +1099,8 @@ async def agent_loop(
                                 )
                                 break
 
-                            # Auto-continue: nudge agent to keep going whenever
-                            # it finishes a text turn but the brand kit isn't done.
-                            # Three cases:
-                            #   A) No palette yet → nudge to call generate_palette
-                            #   B) Palette exists, images remaining → nudge to generate images
-                            #   C) All images done, not finalized → nudge voiceover + finalize
-                            _MAX_AUTO_CONTINUE = 8
-                            remaining = session.total_assets - len(session.completed_assets)
-                            should_continue = (
-                                session.phase == AgentPhase.AWAITING_INPUT
-                                and session.auto_continue_count < _MAX_AUTO_CONTINUE
-                                and session.brand_name  # at minimum we need a brand name
-                                and not session.awaiting_feedback  # wait for user approval after regen
-                                and not session.pending_regen  # wait for agent to fix what user complained about
-                                and not session.zip_url  # brand kit done — wait for user feedback, don't auto-nudge
-                                and _pending_tool_bg[0] == 0  # wait for background tool tasks to finish
-                            )
-                            if _pending_tool_bg[0] > 0:
-                                logger.info(
-                                    f"[{session.id}] Action: auto_continue_deferred | "
-                                    f"Pending tools: {_pending_tool_bg[0]} | "
-                                    f"Waiting for background tool tasks to complete"
-                                )
-
-                            if should_continue and not session.tagline and session.brand_name:
-                                # Case A0: name chosen but brand identity not revealed yet
-                                session.auto_continue_count += 1
-                                nudge = (
-                                    f"The user chose the name '{session.brand_name}'. "
-                                    "Say a confident, product-specific comment about why this name fits "
-                                    "(reference what you see in the product photo). "
-                                    "Then announce what's next — e.g. 'Let me build out the full brand identity for you.' "
-                                    "Then IMMEDIATELY call reveal_brand_identity with brand_name, tagline, brand_story, "
-                                    "brand_values, and tone_of_voice_do/dont. "
-                                    "Do NOT propose new names. Do NOT ask questions."
-                                )
-                                logger.info(f"[{session.id}] Action: auto_continue_reveal (queued) | Attempt: {session.auto_continue_count}/{_MAX_AUTO_CONTINUE}")
-                                brand_state.transition_phase(session, AgentPhase.GENERATING)
-                                asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "reveal"))
-                            elif should_continue and not session.palette:
-                                # Case A1: brand identity revealed but no palette yet
-                                session.auto_continue_count += 1
-                                nudge = (
-                                    "Say ONE sentence about the colors you see in the product and the palette direction you're taking — "
-                                    "be specific, mention a dominant hue or mood. Do NOT use generic phrases like 'Now let me craft your color palette.' "
-                                    "Then call generate_palette with 5 colors. "
-                                    "After palette returns, say 1 sentence commenting on the RESULT — mention a specific color or the overall feel it creates. "
-                                    "Then HARD STOP — say nothing more. Do NOT mention fonts, logo, or images."
-                                )
-                                logger.info(f"[{session.id}] Action: auto_continue_palette (queued) | Attempt: {session.auto_continue_count}/{_MAX_AUTO_CONTINUE}")
-                                brand_state.transition_phase(session, AgentPhase.GENERATING)
-                                asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "palette"))
-                            elif should_continue and session.palette and not session.font_suggestion:
-                                # Case A2: palette done but no fonts yet
-                                session.auto_continue_count += 1
-                                nudge = (
-                                    "Say ONE sentence connecting typography to this brand's personality — "
-                                    "mention the feeling you want or how it complements the palette. "
-                                    "Do NOT use generic phrases like 'Time to pair the perfect fonts.' "
-                                    "Then call suggest_fonts with heading and body fonts. "
-                                    "After fonts return, say 1 sentence about what THIS specific pairing achieves for the brand. "
-                                    "Then HARD STOP — say nothing more. Do NOT mention logo, images, or visuals."
-                                )
-                                logger.info(f"[{session.id}] Action: auto_continue_fonts (queued) | Attempt: {session.auto_continue_count}/{_MAX_AUTO_CONTINUE}")
-                                brand_state.transition_phase(session, AgentPhase.GENERATING)
-                                asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "fonts"))
-                            elif should_continue and session.palette and remaining > 0:
-                                # Case B: palette done, images remaining
-                                session.auto_continue_count += 1
-                                remaining_types = [
-                                    a for a in ["logo", "hero_lifestyle", "instagram_post"]
-                                    if a not in session.completed_assets
-                                ]
-                                next_asset = remaining_types[0] if remaining_types else "logo"
-                                asset_label = {"logo": "logo", "hero_lifestyle": "lifestyle hero", "instagram_post": "Instagram post"}.get(next_asset, next_asset)
-                                nudge = (
-                                    f"Say ONE sentence hinting at the creative direction for the {asset_label} — "
-                                    f"reference the brand's palette, mood, or identity. Do NOT say generic phrases like "
-                                    f"'Now let me create your {asset_label}.' Be a creative director teasing a specific vision. "
-                                    f"Finish speaking your full sentence, then call generate_image "
-                                    f"with asset_type '{next_asset}'. "
-                                    f"The image is pre-generated and returns instantly. "
-                                    f"Say NOTHING after the tool call — stop and wait."
-                                )
-                                logger.info(f"[{session.id}] Action: auto_continue (queued) | Attempt: {session.auto_continue_count}/{_MAX_AUTO_CONTINUE} | Next: {next_asset}")
-                                brand_state.transition_phase(session, AgentPhase.GENERATING)
-                                asyncio.create_task(_wait_and_nudge(session, live_session, nudge, f"image:{next_asset}"))
-                            elif (session.phase == AgentPhase.AWAITING_INPUT
-                                    and session.auto_continue_count < _MAX_AUTO_CONTINUE
-                                    and session.brand_name
-                                    and session.palette and remaining == 0 and not session.zip_url
-                                    and not session.voiceover_playing):
-                                # Case C: all images done — voiceover + finalize
-                                session.awaiting_feedback = False
-                                session.auto_continue_count += 1
-                                nudge = (
-                                    "All images are done. Say ONE sentence that ties the whole creative journey together — "
-                                    "reference something specific about the brand (a color, the name's meaning, the mood). "
-                                    "Do NOT use generic phrases like 'Let me bring it all together.' "
-                                    "Then call generate_voiceover with ALL FOUR parameters:\n"
-                                    "- handoff_text: your 1-sentence handoff introducing Anna (e.g. 'Let me hand you over to Anna.')\n"
-                                    "- greeting_text: Anna's short self-introduction, 1-2 sentences (e.g. \"Hi, I'm Anna. Let me tell you the story of [brand].\")\n"
-                                    "- narration_text: Anna's full brand story narration — the story ONLY, without the greeting\n"
-                                    "- mood: brand mood\n"
-                                    "After voiceover returns, STOP. Say nothing more. "
-                                    "Do NOT call finalize_brand_kit — the system will handle it after Anna finishes."
-                                )
-                                logger.info(f"[{session.id}] Action: auto_continue_finalize (queued) | Attempt: {session.auto_continue_count}/{_MAX_AUTO_CONTINUE}")
-                                brand_state.transition_phase(session, AgentPhase.GENERATING)
-                                asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "voiceover"))
-                            elif (session.brand_name
-                                    and (remaining > 0 or not session.zip_url)
-                                    and session.auto_continue_count >= _MAX_AUTO_CONTINUE):
-                                logger.warning(
-                                    f"[{session.id}] Action: auto_continue_exhausted | "
-                                    f"Attempts: {session.auto_continue_count} | "
-                                    f"Agent not responding — waiting for user"
-                                )
+                            # State-machine dispatch — speech and tool turns are always separate.
+                            await _dispatch_next_step(session, live_session, ws, turn_count, _pending_tool_bg)
 
                             break
 
@@ -901,6 +1126,36 @@ async def agent_loop(
                                 "phase": session.phase.value,
                             })
 
+                            # ── 2b. For propose_names: send cards IMMEDIATELY ──
+                            # fc.args already contains the names — no need to wait
+                            # for background task. Cards reach frontend while analysis
+                            # audio is still playing (tool call fires right after speech).
+                            if fc.name == "propose_names":
+                                args_dict = dict(fc.args) if fc.args else {}
+                                raw_names = args_dict.get("names", [])
+                                validated = []
+                                for i, n in enumerate(raw_names[:3]):
+                                    if isinstance(n, dict) and n.get("name"):
+                                        entry = {
+                                            "id": i + 1,
+                                            "name": n["name"],
+                                            "rationale": n.get("rationale", ""),
+                                        }
+                                        if n.get("recommended"):
+                                            entry["recommended"] = True
+                                        validated.append(entry)
+                                if validated:
+                                    early_event = {
+                                        "type": "name_proposals",
+                                        "names": validated,
+                                        "auto_select_seconds": 8,
+                                    }
+                                    await send_json(ws, early_event)
+                                    logger.info(
+                                        f"[{session.id}] Action: name_proposals_early | "
+                                        f"Names: {[n['name'] for n in validated]}"
+                                    )
+
                             # Set voiceover flag immediately to prevent
                             # auto-continue Case C from re-triggering before
                             # background task sets it.
@@ -916,6 +1171,18 @@ async def agent_loop(
                                 _fc=fc, _ls=live_session,
                             ):
                                 try:
+                                    # Guard: skip duplicate generate_voiceover calls.
+                                    # Gemini Live can self-interrupt and retry the tool
+                                    # call, which would produce two overlapping audios.
+                                    if _fc.name == "generate_voiceover":
+                                        if session.voiceover_sent:
+                                            logger.info(
+                                                f"[{session.id}] Action: voiceover_dup_skip | "
+                                                f"generate_voiceover already executed, ignoring duplicate"
+                                            )
+                                            return
+                                        session.voiceover_sent = True
+
                                     fn_response, event = await tool_executor.execute(
                                         session, _fc, emit_cb=_emit_cb
                                     )
@@ -923,11 +1190,44 @@ async def agent_loop(
                                         f"[{session.id}] Action: tool_done | Tool: {_fc.name}"
                                     )
 
+                                    # Wait for frontend audio to finish before sending
+                                    # tool_response back to Live API for fast tools.
+                                    # Fast tools complete in <100ms — if we send tool_response
+                                    # immediately, Live API stops the agent's current audio
+                                    # mid-sentence to start processing the tool result.
+                                    # Slow tools (generate_image) take 5-15s so audio is done.
+                                    _FAST_TOOLS = {
+                                        "reveal_brand_identity", "suggest_fonts",
+                                        "generate_palette", "propose_names",
+                                    }
+                                    if _fc.name in _FAST_TOOLS:
+                                        if not hasattr(session, "frontend_ready"):
+                                            session.frontend_ready = asyncio.Event()
+                                        session.frontend_ready.clear()
+                                        try:
+                                            await asyncio.wait_for(
+                                                session.frontend_ready.wait(), timeout=15.0
+                                            )
+                                            logger.info(
+                                                f"[{session.id}] Action: fast_tool_audio_done | "
+                                                f"Tool: {_fc.name} | Sending tool_response"
+                                            )
+                                        except asyncio.TimeoutError:
+                                            logger.warning(
+                                                f"[{session.id}] Action: fast_tool_audio_wait_timeout | "
+                                                f"Tool: {_fc.name} | Proceeding after 15s"
+                                            )
+
                                     # Set voiceover flag BEFORE sending tool_response
                                     # to prevent race condition where auto-continue
                                     # fires Case C again before flag is set.
                                     if _fc.name == "generate_voiceover":
                                         session.voiceover_playing = True
+
+                                    # propose_names was already sent early (before background task).
+                                    # Suppress duplicate here to avoid double render.
+                                    if _fc.name == "propose_names":
+                                        event = None
 
                                     # Send tool_response to Live API
                                     await _ls.send_tool_response(
@@ -936,10 +1236,23 @@ async def agent_loop(
                                     logger.info(f"[{session.id}] Action: tool_response_sent | Tool: {_fc.name}")
                                     session.auto_continue_count = 0
 
-                                    # Send results to frontend IMMEDIATELY
+                                    # Send results to frontend (non-propose_names tools)
                                     if event:
                                         await send_json(ws, event)
                                         _store_event_on_session(session, event, pregen=pregen, emit_cb=None)
+
+                                    # Advance micro-phase after tool completion so
+                                    # _dispatch_next_step knows which step comes next.
+                                    if _fc.name == "propose_names":
+                                        brand_state.transition_phase(session, AgentPhase.AWAITING_NAME)
+                                    elif _fc.name == "reveal_brand_identity":
+                                        brand_state.transition_phase(session, AgentPhase.REVEAL_TOOL)
+                                    elif _fc.name == "generate_palette":
+                                        brand_state.transition_phase(session, AgentPhase.PALETTE_TOOL)
+                                    elif _fc.name == "suggest_fonts":
+                                        brand_state.transition_phase(session, AgentPhase.FONTS_TOOL)
+                                    elif _fc.name == "generate_image":
+                                        brand_state.transition_phase(session, AgentPhase.IMAGE_TOOL)
 
                                     # Voiceover safety timeout
                                     if _fc.name == "generate_voiceover" and event:

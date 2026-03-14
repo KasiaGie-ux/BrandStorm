@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import HeroStage from './components/HeroStage';
 import UploadStage from './components/UploadStage';
-import LaunchSequence from './components/LaunchSequence';
+import LaunchSequence, { parseAgentText } from './components/LaunchSequence';
 import StudioScreen from './components/StudioScreen';
 import ResultsScreen from './components/ResultsScreen';
 import useWebSocket from './hooks/useWebSocket';
@@ -25,6 +25,7 @@ export default function App() {
   const [firstAgentText, setFirstAgentText] = useState(null);
   const [openingData, setOpeningData] = useState(null); // { words: [...], intro: "..." }
   const launchTextRef = useRef('');
+  const launchIntroRef = useRef(null); // { opener, intro } — exact text shown in LaunchSequence
   const imageFileRef = useRef(null);
   const contextTextRef = useRef('');
   const firstTextCaptured = useRef(false);
@@ -44,6 +45,9 @@ export default function App() {
   const wasPlayingRef = useRef(false);
   const audioDoneTimerRef = useRef(null);
   const wsRef = useRef(null);
+  // Track whether the current agent turn is still active (audio or text still arriving).
+  // Used by useEventQueue to gate visual event rendering until the turn ends.
+  const turnActiveRef = useRef(false);
 
   // Keep screenRef in sync for use inside callbacks (avoids stale closures)
   useEffect(() => { screenRef.current = screen; }, [screen]);
@@ -54,7 +58,8 @@ export default function App() {
   const eventQueue = useEventQueue(
     (ev) => { if (processEventRef.current) processEventRef.current(ev); },
     () => { if (wsRef.current) wsRef.current.sendMessage({ type: 'audio_playback_done' }); },
-    audioPlayback.getIsPlaying,   // synchronous ref-based check — no render lag
+    audioPlayback.getIsPlaying,          // synchronous ref-based check — no render lag
+    () => turnActiveRef.current,         // synchronous turn-active check
   );
 
   // Detect audio done transition → flush the event queue.
@@ -77,6 +82,7 @@ export default function App() {
       if (audioDoneTimerRef.current) clearTimeout(audioDoneTimerRef.current);
     };
   }, [audioPlayback.isPlaying, eventQueue]);
+
 
   // When pendingResults is set, transition to results after agent audio finishes
   useEffect(() => {
@@ -121,6 +127,26 @@ export default function App() {
       window.removeEventListener('dragover', onDragOver);
       window.removeEventListener('drop', onDrop, true);
     };
+  }, []);
+
+  // Strip known opener+intro prefix from any text before displaying in chat.
+  // Uses the exact strings stored in launchIntroRef (from opening_sequence event).
+  // Handles: "Opener. Intro sentence 1. Intro sentence 2." → ""
+  // Handles: "Opener. Intro. Analysis starts here..." → "Analysis starts here..."
+  const stripKnownIntro = useCallback((text) => {
+    const li = launchIntroRef.current;
+    if (!text?.trim() || !li) return text;
+    let s = text.trim();
+    const { opener, intro } = li;
+    // Try stripping opener + intro together (space or newline separator)
+    for (const sep of [' ', '\n']) {
+      const combined = [opener, intro].filter(Boolean).join(sep);
+      if (combined && s.startsWith(combined)) return s.slice(combined.length).trim();
+    }
+    // Try stripping opener alone, then intro
+    if (opener && s.startsWith(opener)) s = s.slice(opener.length).trim();
+    if (intro && s.startsWith(intro)) s = s.slice(intro.length).trim();
+    return s;
   }, []);
 
   const msgIdCounter = useRef(0);
@@ -201,50 +227,17 @@ export default function App() {
           // Also set firstAgentText so LaunchSequence triggers
           const wordsStr = event.words.map(w => w + '.').join(' ');
           setFirstAgentText(wordsStr + '\n' + (event.intro || ''));
+          // Store exact opener+intro for use as a chat filter (prevents them leaking
+          // into the chat from subsequent turns where the agent repeats the intro).
+          launchIntroRef.current = { opener: wordsStr, intro: event.intro || '' };
         }
         break;
 
-      case 'agent_text':
-        // Accumulate agent text during launch phase for LaunchSequence parsing.
-        // Opening sequence text goes ONLY to LaunchSequence, NOT to chat messages.
-        if (!firstTextCaptured.current && event.text) {
-          // Non-partial = final consolidated text from backend (turn_complete flush).
-          if (event.partial === false) {
-            launchTextRef.current = event.text;
-            setFirstAgentText(event.text);
-            firstTextCaptured.current = true;
-          } else {
-            // Partial chunks — accumulate incrementally
-            launchTextRef.current += event.text;
-            const acc = launchTextRef.current;
-            const periodCount = (acc.match(/\./g) || []).length;
-            if (periodCount >= 2) {
-              setFirstAgentText(acc);
-            }
-            if (periodCount >= 4) {
-              firstTextCaptured.current = true;
-            }
-          }
-          // ALWAYS break — opener/intro text is for LaunchSequence only, never chat
-          break;
-        }
+      case 'agent_text': {
+        const isFirstTurn = !messagesRef.current.some(m => m.type === 'agent_turn_complete');
 
-        // After firstTextCaptured, agent_text flows to chat messages normally.
-        // (The opener is already blocked above; analysis text should appear in chat.)
-
-        // Empty text = turn boundary or closing a partial.
+        // If empty text, just close any dangling partial without adding new message
         if (!event.text || !event.text.trim()) {
-          if (!firstTextCaptured.current) {
-            // Opening turn ended. Close the launch accumulation gate —
-            // the opener + intro (if any) are captured in launchTextRef.
-            // Push final accumulated text to LaunchSequence.
-            const acc = launchTextRef.current;
-            if (acc) {
-              setFirstAgentText(acc);
-            }
-            firstTextCaptured.current = true;
-            break;
-          }
           setMessages(prev => {
             const last = prev[prev.length - 1];
             if (last && last.type === 'agent_text' && last._partial) {
@@ -256,7 +249,31 @@ export default function App() {
           });
           break;
         }
+
+        if (isFirstTurn) {
+          // ANALYZING turn = opener + intro only. Feed to LaunchSequence, never to chat.
+          if (event.partial) {
+            const prev_text = launchTextRef.current || '';
+            const needs_space = prev_text.length > 0 && (
+              (/[.!?]$/.test(prev_text) && /^[A-Za-z]/.test(event.text)) ||
+              (/[a-z]$/.test(prev_text) && /^[A-Z]/.test(event.text))
+            );
+            launchTextRef.current = prev_text + (needs_space ? ' ' : '') + event.text;
+          } else {
+            launchTextRef.current = event.text;
+          }
+          const acc = launchTextRef.current;
+          // Stop updating firstAgentText once opening_sequence has provided the
+          // authoritative text (firstTextCaptured = true). This prevents the
+          // LaunchSequence useEffect cleanup from clearing the intro timer every
+          // time a new partial arrives — which would prevent the intro from ever showing.
+          if (!firstTextCaptured.current && acc.trim()) setFirstAgentText(acc);
+          break; // first turn never goes to chat
+        }
+
+        // --- Normal turns (> first turn) ---
         if (event.partial) {
+          turnActiveRef.current = true;
           setMessages(prev => {
             const last = prev[prev.length - 1];
             if (last && last.type === 'agent_text' && last._partial) {
@@ -272,10 +289,13 @@ export default function App() {
             return [...prev, { type: 'agent_text', text: event.text, _partial: true, _id: ++msgIdCounter.current }];
           });
         } else {
+          // Strip known opener+intro from the final text — catches the case where the
+          // agent starts the analysis turn by repeating its intro before the analysis.
+          const outputText = stripKnownIntro(event.text);
           setMessages(prev => {
-            const last = prev[prev.length - 1];
-            // If empty text, just close any dangling partial without adding new message
-            if (!event.text || !event.text.trim()) {
+            if (!outputText.trim()) {
+              // Just close any dangling partial
+              const last = prev[prev.length - 1];
               if (last && last.type === 'agent_text' && last._partial) {
                 const updated = [...prev];
                 updated[updated.length - 1] = { ...last, _partial: false };
@@ -283,72 +303,32 @@ export default function App() {
               }
               return prev;
             }
-
-            let outputText = event.text;
-
-            // Strip text that was already shown in LaunchSequence.
-            // Compare normalized words — if outputText starts with the launch
-            // text, remove the overlapping prefix so only analysis remains.
-            if (launchTextRef.current && outputText) {
-              const norm = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-              const launchNorm = norm(launchTextRef.current);
-              const outNorm = norm(outputText);
-              if (launchNorm.length > 20 && outNorm.startsWith(launchNorm.substring(0, Math.floor(launchNorm.length * 0.7)))) {
-                // Find a sentence boundary in the original text near the end of the launch portion
-                const launchWordCount = launchTextRef.current.split(/\s+/).length;
-                const outWords = outputText.split(/\s+/);
-                // Skip past the launch words, then find the next sentence start
-                let cutIdx = Math.min(launchWordCount, outWords.length);
-                // Scan forward for a capital letter (sentence start)
-                while (cutIdx < outWords.length && !/^[A-Z]/.test(outWords[cutIdx])) cutIdx++;
-                const rest = outWords.slice(cutIdx).join(' ').trim();
-                if (rest) {
-                  outputText = rest;
-                } else {
-                  // Nothing left after stripping — skip this message entirely
-                  return prev;
-                }
-              }
-            }
-
-            // Replace the last partial (still open)
+            const last = prev[prev.length - 1];
             if (last && last.type === 'agent_text' && last._partial) {
               const updated = [...prev];
               updated[updated.length - 1] = { ...last, text: outputText, _partial: false };
               return updated;
             }
-
-            // Replace the last agent_text in the same turn-block.
-            // Only a USER message creates a real boundary — structured events
-            // (palette_reveal, font_suggestion etc.) can appear between the
-            // partial text and the non-partial narration within the same turn.
             for (let i = prev.length - 1; i >= 0; i--) {
               const m = prev[i];
+              if (m.type === 'user' || m.type === 'agent_turn_complete') break;
               if (m.type === 'agent_text') {
                 const updated = [...prev];
                 updated[i] = { ...m, text: outputText, _partial: false };
                 return updated;
               }
-              if (m.type === 'user') break; // only user input = real turn boundary
             }
-
-            return [...prev, { type: 'agent_text', text: outputText, _id: ++msgIdCounter.current }];
+            return [...prev, { type: 'agent_text', text: outputText, _partial: false, _id: ++msgIdCounter.current }];
           });
         }
         break;
+      }
 
       case 'agent_turn_complete':
         if (event.phase) setPhase(event.phase);
         addMessage({ type: 'agent_turn_complete' });
-        // Backup: if no audio was generated for this turn, signal readiness.
-        // Uses getIsPlaying() (sync ref) — NOT isPlaying (async state).
-        // 1200ms gives the audio pipeline time to start before we conclude
-        // "no audio this turn" and fire the fallback.
-        setTimeout(() => {
-          if (!audioPlayback.getIsPlaying() && eventQueue.getQueueLength() === 0) {
-            if (wsRef.current) wsRef.current.sendMessage({ type: 'audio_playback_done' });
-          }
-        }, 1200);
+        turnActiveRef.current = false;
+        eventQueue.onTurnComplete();
         break;
 
       case 'tool_invoked':
@@ -417,14 +397,13 @@ export default function App() {
         break;
 
       case 'name_proposals':
-        // Delay so the analysis text has time to appear first.
-        // User can start reading the analysis before names pop in.
-        setTimeout(() => {
-          addMessage({
-            type: 'name_proposals', names: event.names,
-            auto_select_seconds: event.auto_select_seconds || 10,
-          });
-        }, 2500);
+        // Dedup: backend sends early (during audio) + tool executor may re-send
+        setMessages(prev => {
+          if (prev.some(m => m.type === 'name_proposals')) return prev;
+          const next = [...prev, { type: 'name_proposals', names: event.names, auto_select_seconds: event.auto_select_seconds || 8, _id: ++msgIdCounter.current }];
+          messagesRef.current = next;
+          return next;
+        });
         break;
 
       case 'palette_reveal':
@@ -459,22 +438,24 @@ export default function App() {
 
       case 'agent_audio':
         if (event.data) {
+          turnActiveRef.current = true;
           audioPlayback.queueChunk(event.data);
         }
         break;
 
       case 'agent_audio_end':
-        audioPlayback.flush();
+        // Backend finished sending audio chunks for this turn.
+        // Let the frontend queue naturally play out to completion.
         break;
 
       case 'ping':
         break;
 
       case 'voiceover_handoff':
-        // Stop agent's Live API audio so it doesn't overlap with Anna
-        audioPlayback.flush();
-        // Charon's handoff line — small muted text + auto-play audio
-        addMessage({ type: 'voiceover_handoff', audio_url: event.audio_url, text: event.text });
+        // voiceover_handoff is in VISUAL_TYPES so the event queue holds it
+        // while Charon's audio plays. By the time this case runs, audio is
+        // already finished — fire Anna's cue immediately.
+        window.dispatchEvent(new CustomEvent('voiceover-handoff-ended'));
         break;
 
       case 'voiceover_greeting':
@@ -488,14 +469,23 @@ export default function App() {
         // Anna's brand story narration — the deliverable
         setBrandKit(prev => prev ? { ...prev, audio_url: event.audio_url } : { audio_url: event.audio_url });
         hasVoiceoverRef.current = true;
-        addMessage({ type: 'voiceover_story', audio_url: event.audio_url });
+        // Dedup: Gemini self-interruption can trigger the tool twice
+        setMessages(prev => {
+          if (prev.some(m => m.type === 'voiceover_story')) return prev;
+          messagesRef.current = [...prev, { type: 'voiceover_story', audio_url: event.audio_url, _id: ++msgIdCounter.current }];
+          return messagesRef.current;
+        });
         break;
 
       case 'voiceover_generated':
         // Legacy single-voice fallback
         setBrandKit(prev => prev ? { ...prev, audio_url: event.audio_url } : { audio_url: event.audio_url });
         hasVoiceoverRef.current = true;
-        addMessage({ type: 'voiceover_story', audio_url: event.audio_url });
+        setMessages(prev => {
+          if (prev.some(m => m.type === 'voiceover_story')) return prev;
+          messagesRef.current = [...prev, { type: 'voiceover_story', audio_url: event.audio_url, _id: ++msgIdCounter.current }];
+          return messagesRef.current;
+        });
         break;
 
       case 'session_timeout':
@@ -509,7 +499,7 @@ export default function App() {
       default:
         break;
     }
-  }, [addMessage, eventQueue, audioPlayback, sessionId]);
+  }, [addMessage, eventQueue, audioPlayback, sessionId, stripKnownIntro]);
 
   // Keep processEventRef in sync so the event queue can call handleWsMessage
   processEventRef.current = handleWsMessage;
@@ -533,6 +523,7 @@ export default function App() {
     openingReceived.current = false;
     firstTextCaptured.current = false;
     launchTextRef.current = '';
+    launchIntroRef.current = null;
     pendingResumeRef.current = null;
     awaitingFirstConnect.current = true;
     generationDoneRef.current = false;
@@ -606,6 +597,7 @@ export default function App() {
     openingReceived.current = false;
     firstTextCaptured.current = false;
     launchTextRef.current = '';
+    launchIntroRef.current = null;
   }, [ws]);
 
   const handleStop = useCallback(() => {

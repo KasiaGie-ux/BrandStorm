@@ -170,7 +170,26 @@ class ToolExecutor:
     async def _handle_propose_names(
         self, session: Session, args: dict,
     ) -> tuple[dict, dict | None]:
-        """propose_names — present 3 brand name proposals to user."""
+        """propose_names — present 3 brand name proposals to user.
+
+        If names were pre-generated in parallel (during analysis speech), return
+        them immediately without re-generating. The frontend already has the cards.
+        """
+        # Check if names were pre-generated in parallel — already sent to frontend
+        pregen = getattr(session, "_pregen_names", None)
+        if pregen:
+            session._pregen_names = None  # clear to prevent re-use
+            logger.info(
+                f"[{session.id}] Phase: PROPOSING | Action: propose_names_pregen_hit | "
+                f"Names: {[n['name'] for n in pregen]}"
+            )
+            result = {
+                "status": "success",
+                "message": "Name proposals already displayed. Wait for user to pick one.",
+                "names": [n["name"] for n in pregen],
+            }
+            return result, None  # don't re-emit — already sent to frontend
+
         names = args.get("names", [])
         if not names:
             return {"status": "error", "error": "No names provided"}, None

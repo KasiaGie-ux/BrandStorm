@@ -69,13 +69,23 @@ function parseAgentText(text) {
   if (openerEnd > 0) {
     const opener = sentences.slice(0, openerEnd).join(' ');
     const remaining = sentences.slice(openerEnd);
-    if (remaining.length >= 2) {
-      return { opener, intro: remaining[0], rest: remaining.slice(1).join(' ') };
+    if (remaining.length === 0) return { opener, intro: '', rest: '' };
+    if (remaining.length === 1) return { opener, intro: remaining[0], rest: '' };
+
+    // Check if the sentence immediately after the intro sentence is a greeting
+    // continuation (e.g. "Let's build something extraordinary." after
+    // "I'm Charon, your creative director."). If so, include it in the intro
+    // block so it doesn't leak into the chat as fake "analysis" content.
+    const afterIntro = remaining[1];
+    const isGreetingContinuation =
+      /^let'?s\b|^together\b|^shall we\b/i.test(afterIntro) && afterIntro.length < 80;
+
+    if (isGreetingContinuation) {
+      const intro = remaining[0] + ' ' + remaining[1];
+      return { opener, intro, rest: remaining.slice(2).join(' ') };
     }
-    if (remaining.length === 1) {
-      return { opener, intro: remaining[0], rest: '' };
-    }
-    return { opener, intro: '', rest: '' };
+
+    return { opener, intro: remaining[0], rest: remaining.slice(1).join(' ') };
   }
 
   // Fallback: first sentence is opener
@@ -227,9 +237,13 @@ export default function LaunchSequence({ imagePreview, firstAgentText, openingDa
     }, 5200);
 
     return () => {
-      clearTimeout(introTimerRef.current);
-      clearTimeout(transTimerRef.current);
-      clearTimeout(doneTimerRef.current);
+      // Only clear timers if words phase hasn't triggered yet.
+      // Once wordsTriggered = true the timers must run to completion.
+      if (!wordsTriggered.current) {
+        clearTimeout(introTimerRef.current);
+        clearTimeout(transTimerRef.current);
+        clearTimeout(doneTimerRef.current);
+      }
     };
   }, [openingData, firstAgentText, parsed.opener, fireComplete]);
 
