@@ -131,12 +131,29 @@ TOOL_DECLARATIONS = types.Tool(
                         type=types.Type.STRING,
                         enum=["logo", "hero_lifestyle", "instagram_post", "packaging"],
                     ),
-                    "prompt": types.Schema(type=types.Type.STRING),
+                    "prompt": types.Schema(
+                        type=types.Type.STRING,
+                        description=(
+                            "Creative direction for the image. Be specific and visual: "
+                            "describe the feeling, composition, lighting mood, and how "
+                            "it connects to the product. Reference what you see in the "
+                            "product photo. Example: 'warm golden lighting on marble "
+                            "surface, the bottle's amber glass catching the light, "
+                            "editorial intimacy.'"
+                        ),
+                    ),
                     "aspect_ratio": types.Schema(
                         type=types.Type.STRING,
                         enum=["1:1", "4:5", "16:9"],
                     ),
-                    "style_anchor": types.Schema(type=types.Type.STRING),
+                    "style_anchor": types.Schema(
+                        type=types.Type.STRING,
+                        description=(
+                            "Visual style direction: luxury, modern, eco, energetic, "
+                            "gentle, or edgy. Can combine: 'modern luxury' or "
+                            "'edgy eco'. Controls lighting, texture, and mood."
+                        ),
+                    ),
                 },
                 required=["asset_type", "prompt", "style_anchor"],
             ),
