@@ -15,52 +15,64 @@ woven into the brief alongside data we pull from the session.
 
 STYLE_VOCABULARY: dict[str, dict[str, str]] = {
     "luxury": {
-        "lighting": "warm studio lighting with soft shadows and subtle rim light",
+        "lighting": "warm directional studio lighting with gobo-dappled shadows and a 45-degree kicker rim light separating the product from the background",
+        "optics": "pronounced caustics refracting through glass and translucent surfaces onto the set, crisp specular highlights outlining product edges, subtle subsurface scattering on organic materials",
+        "camera": "captured on a medium format 85mm lens at f/2.8 -- natural optical depth-of-field roll-off, tack-sharp focal plane",
         "palette_usage": "deep, saturated tones with metallic or warm neutral accents",
         "texture": "rich tactile surfaces -- marble, velvet, brushed metal, frosted glass",
         "mood": "aspirational, elevated, intimate",
         "photography_ref": "editorial campaign aesthetic -- minimal props, maximum presence",
-        "typography_style": "refined serif or elegant geometric sans-serif with generous tracking",
+        "typography_style": "high-contrast serif with razor-sharp terminals and impeccable optical kerning, or elegant geometric sans-serif with generous tracking and refined stroke modulation",
     },
     "modern": {
-        "lighting": "clean, even lighting with crisp shadows and high clarity",
+        "lighting": "clean, even key light with crisp geometric shadows and high clarity, precise light fall-off at surface edges",
+        "optics": "clean specular edges with controlled reflections, precise light fall-off, minimal scatter -- every surface reads with clinical sharpness",
+        "camera": "shot on a 35mm prime lens at f/5.6 -- tack-sharp across the entire frame, precise rendering of edges and surfaces",
         "palette_usage": "bold primary paired with clean neutrals, high contrast",
         "texture": "smooth surfaces, matte finishes, clean geometry",
         "mood": "confident, precise, forward-looking",
         "photography_ref": "clean product campaign -- precise angles, controlled backdrop",
-        "typography_style": "geometric sans-serif, tight letter-spacing, strong weight contrast",
+        "typography_style": "geometric sans-serif with monoline stroke weight, tight optical kerning, grid-based Swiss composition, strong weight contrast between display and body sizes",
     },
     "eco": {
-        "lighting": "soft, diffused natural daylight with gentle warmth",
+        "lighting": "soft, diffused natural daylight filtering through foliage, gentle warmth with dappled leaf-shadow patterns across surfaces",
+        "optics": "subsurface scattering through leaves and organic materials giving them a living inner glow, soft light diffusion wrapping around natural textures",
+        "camera": "50mm natural perspective lens at f/4 -- gentle depth separation, honest rendering without optical distortion",
         "palette_usage": "earth tones, sage greens, warm browns, natural whites",
         "texture": "natural materials -- linen, kraft paper, raw wood, dried botanicals",
         "mood": "grounded, honest, calm, sustainable",
         "photography_ref": "organic composition -- breathing space, natural surfaces",
-        "typography_style": "humanist sans-serif or subtle serif with natural proportions",
+        "typography_style": "humanist sans-serif with organic stroke modulation and natural proportions, or subtle serif with hand-drawn warmth and open counters",
     },
     "energetic": {
-        "lighting": "bright, dynamic lighting with vivid color temperature",
+        "lighting": "bright, dynamic lighting with vivid color temperature, multiple colored light sources creating energetic interplay",
+        "optics": "vivid specular bounces across glossy surfaces, saturated color reflections between objects, dynamic light flares and prismatic color spill",
+        "camera": "24mm wide-angle lens at f/4 -- dynamic perspective with slight barrel energy, sense of motion and immediacy",
         "palette_usage": "saturated, high-energy colors with bold contrast pairings",
         "texture": "glossy surfaces, smooth plastics, bold graphic patterns",
         "mood": "playful, bold, youthful, kinetic",
         "photography_ref": "vibrant campaign -- movement, energy, pop of color",
-        "typography_style": "bold rounded sans-serif or display type with personality",
+        "typography_style": "bold rounded sans-serif with uniform stroke weight and open counters, or expressive display type with Bauhaus geometry and playful personality",
     },
     "gentle": {
-        "lighting": "soft, ethereal glow with pastel tones and minimal shadow",
+        "lighting": "soft, ethereal glow with luminous wrap-around light, pastel tones and feathered shadow edges",
+        "optics": "delicate specular shimmer on smooth surfaces, ethereal light bloom around highlights, soft luminous wrap that dissolves hard edges",
+        "camera": "90mm portrait lens at f/2 -- creamy bokeh with soft optical transitions, intimate close perspective",
         "palette_usage": "muted pastels, blush tones, soft whites, whisper-quiet accents",
         "texture": "soft fabrics, petal-smooth surfaces, delicate materials",
         "mood": "tender, refined, quiet luxury, delicate",
         "photography_ref": "serene intimate composition -- soft focus edges, warm tone",
-        "typography_style": "light-weight serif or thin sans-serif with airy spacing",
+        "typography_style": "light-weight serif with delicate hairline strokes and graceful terminals, or thin sans-serif with airy letter-spacing and gentle curves",
     },
     "edgy": {
-        "lighting": "dramatic, high-contrast with deep shadows and selective illumination",
+        "lighting": "dramatic, high-contrast with deep shadows and selective hard illumination, razor-sharp light boundaries",
+        "optics": "harsh specular fall-off with razor-sharp light-to-shadow transitions, dramatic chiaroscuro, selective illumination carving the product out of darkness",
+        "camera": "28mm wide lens at f/8 -- confrontational perspective with deep focus, everything rendered with raw sharpness",
         "palette_usage": "dark base with sharp accent -- black, charcoal, neon or red punch",
         "texture": "raw concrete, distressed metal, matte black, industrial surfaces",
         "mood": "provocative, unapologetic, raw, powerful",
         "photography_ref": "moody editorial -- confrontational angles, dramatic tension",
-        "typography_style": "condensed bold sans-serif or brutalist display type",
+        "typography_style": "condensed bold sans-serif with aggressive vertical proportions and tight negative space, or brutalist display type with raw geometric authority",
     },
 }
 
@@ -152,18 +164,21 @@ LOGO_TEMPLATE = """Generate a brand logo -- a refined typographic wordmark for '
 
 {brand_context}
 
-TYPOGRAPHY:
-The logo is built from carefully crafted letterforms in a {typography_style} style.
-Every stroke has purpose. The word '{brand_name}' reads clearly even at 32px.
+TYPOGRAPHY & DESIGN DIRECTION:
+Bespoke letterforms: {typography_style}.
+Every stroke, terminal, and counter is purposeful. The word '{brand_name}' reads
+clearly even at 32px. Impeccable optical kerning -- each letter pair balanced by eye.
 Imagine it etched into metal, embossed on heavy paper, reversed on dark background.
 {agent_creative_hint}
 
 {palette_instruction}
 
 COMPOSITION:
-Centered on a clean, single-color background. The brand name is the dominant element --
-confident and unhurried. If a symbol accompanies the type, it is a single abstract
-geometric shape that echoes the brand's essence. Generous whitespace -- the logo breathes.
+Strict flat vector lockup on a clean, single-color background. Grid-based type
+architecture -- every element aligned to an invisible structure. The brand name is
+the dominant element -- confident and unhurried. If a symbol accompanies the type,
+it is a single abstract geometric shape that echoes the brand's essence.
+Generous whitespace -- the logo breathes.
 
 FORMAT: {aspect_ratio}, single unified lockup."""
 
@@ -178,7 +193,9 @@ composition, grounded in a physical environment.
 
 SCENE AND MOOD:
 Style: {style_anchor}. Mood: {mood}.
-{lighting}. Surfaces and textures: {texture}.
+{camera}.
+{lighting}. {optics}.
+Surfaces and textures: {texture}.
 {photography_ref}.
 {agent_creative_hint}
 
@@ -186,8 +203,9 @@ Style: {style_anchor}. Mood: {mood}.
 
 COMPOSITION:
 Product placed at a natural focal point, slightly off-center -- editorial, intentional.
-Shallow depth of field draws the eye to the product first. Two to three contextual props
-reinforce the brand story. Open space on one side for potential text overlay.
+The lens delivers natural depth separation -- the product is tack-sharp while the
+background softens through optical fall-off. Two to three contextual props reinforce the
+brand story. Open space on one side for potential text overlay. Cinematic light physics.
 {logo_placement}
 
 FORMAT: {aspect_ratio}, single unified photograph -- one moment, one scene."""
@@ -202,6 +220,8 @@ same details. The product commands attention in the frame.
 
 VISUAL IMPACT:
 Style: {style_anchor}. Mood: {mood}.
+{camera}.
+{lighting}. {optics}.
 This image stops a user mid-scroll through visual tension, unexpected composition,
 or striking color contrast. {photography_ref}.
 {agent_creative_hint}
@@ -212,7 +232,8 @@ COMPOSITION:
 Portrait format (4:5), optimized for Instagram feed. Product fills at least 30% of the
 frame. Strong visual hierarchy -- one focal point, one clear message. Background
 complements the product through texture and color. The product feels grounded in a
-real environment with surfaces and light. Every area of the frame is intentional.
+real environment with surfaces and light. Cinematic light physics throughout.
+Every area of the frame is intentional.
 {logo_placement}
 
 FORMAT: {aspect_ratio}, single rich immersive photograph."""
@@ -260,6 +281,8 @@ def build_image_prompt(
         style_anchor=style_anchor or style_key,
         aspect_ratio=aspect_ratio,
         lighting=style["lighting"],
+        optics=style.get("optics", ""),
+        camera=style.get("camera", ""),
         mood=style["mood"],
         texture=style.get("texture", ""),
         photography_ref=style["photography_ref"],

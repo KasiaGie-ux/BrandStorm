@@ -91,7 +91,7 @@ Images are pre-generated — the tool returns instantly.
 
 WRITING THE generate_image PROMPT — be a creative director writing a brief, not a search query:
 - For logo: describe the personality of the letterforms — are they angular and sharp, or flowing and organic? What weight and spacing? Is there a symbol, and what abstract form does it take? Reference what you see in the product.
-- For hero: describe the scene — what surfaces, what light, what props surround the product? What camera perspective? How does the environment tell the brand story?
+- For hero: describe the scene — what surfaces, what props surround the product? What camera perspective? How does the environment tell the brand story?
 - For instagram: what makes this scroll-stopping? What angle creates tension? How does the background contrast with the product?
 The system enriches your prompt with composition rules, palette colors, and style attributes automatically. Your job is the CREATIVE VISION — the specific, evocative direction only you can provide.
 

@@ -148,10 +148,15 @@ TOOL_DECLARATIONS = types.Tool(
                     ),
                     "style_anchor": types.Schema(
                         type=types.Type.STRING,
+                        enum=["luxury", "modern", "eco", "energetic", "gentle", "edgy"],
                         description=(
-                            "Visual style direction: luxury, modern, eco, energetic, "
-                            "gentle, or edgy. Can combine: 'modern luxury' or "
-                            "'edgy eco'. Controls lighting, texture, and mood."
+                            "Pick ONE style based on the product: "
+                            "luxury = warm editorial, marble/velvet, intimate; "
+                            "modern = clean precision, geometric, sharp; "
+                            "eco = natural daylight, organic textures, earthy; "
+                            "energetic = vivid colors, dynamic angles, playful; "
+                            "gentle = soft glow, pastels, delicate; "
+                            "edgy = dramatic contrast, industrial, raw"
                         ),
                     ),
                 },
