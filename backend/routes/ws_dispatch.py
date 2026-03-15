@@ -13,6 +13,22 @@ from routes.ws_helpers import _wait_and_nudge
 logger = logging.getLogger("brand-agent")
 
 
+def _schedule_nudge(session, live_session, nudge, label, **kwargs):
+    """Cancel any existing nudge task, then schedule a new one.
+
+    Prevents concurrent nudge races — only one nudge is in-flight at a time.
+    """
+    if session._nudge_task and not session._nudge_task.done():
+        session._nudge_task.cancel()
+        logger.info(
+            f"[{session.id}] Action: stale_nudge_cancelled | New: {label}"
+        )
+    session._nudge_task = asyncio.create_task(
+        _wait_and_nudge(session, live_session, nudge, label, **kwargs),
+        name=f"nudge-{label}",
+    )
+
+
 async def _dispatch_next_step(
     session: "Session",
     live_session: object,
@@ -29,7 +45,6 @@ async def _dispatch_next_step(
     Each _SPEECH phase tells the agent: "speak X, do NOT call any tools, STOP."
     Each _TOOL phase tells the agent: "call X tool, do NOT speak."
     """
-    # FIX 9: Guard uses only two flags
     if session.interrupt_text or session.awaiting_feedback:
         return
     if _pending_tool_bg[0] > 0:
@@ -42,6 +57,12 @@ async def _dispatch_next_step(
         logger.info(f"[{session.id}] Action: dispatch_deferred | Voiceover playing")
         return
     if session.zip_url:
+        return
+
+    # Nudge-in-flight guard — prevents agent_turn_complete dispatch from
+    # racing against _tool_background dispatch.
+    if session._nudge_task and not session._nudge_task.done():
+        logger.info(f"[{session.id}] Action: dispatch_deferred | Nudge in-flight")
         return
 
     phase = session.phase
@@ -91,6 +112,8 @@ async def _dispatch_next_step(
 
             await _wait_and_nudge(session, live_session, _nudge, "post_analysis")
 
+        # Post-analysis has its own polling loop — use raw create_task
+        # (not _schedule_nudge) because it polls for pregen before nudging.
         asyncio.create_task(_post_analysis_nudge(), name="post-analysis-nudge")
 
     # ── AWAITING_NAME: name chosen, no tagline yet → skip (REVEAL already in-flight) ─
@@ -143,7 +166,7 @@ async def _dispatch_next_step(
             "brand_values, and tone_of_voice_do/dont. Do NOT speak. Just call the tool."
         )
         logger.info(f"[{session.id}] Action: dispatch_reveal_tool | Turn: {turn_count}")
-        asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "reveal_tool"))
+        _schedule_nudge(session, live_session, nudge, "reveal_tool")
 
     # ── REVEAL_TOOL done → palette (or skip to next missing thing) ───────────
     elif phase == AgentPhase.REVEAL_TOOL and session.tagline:
@@ -155,7 +178,7 @@ async def _dispatch_next_step(
                 "Then immediately call generate_palette with 5 colors. Do NOT wait."
             )
             logger.info(f"[{session.id}] Action: dispatch_palette_combined | Turn: {turn_count}")
-            asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "palette_combined"))
+            _schedule_nudge(session, live_session, nudge, "palette_combined")
         else:
             # palette already exists (regen scenario) — skip straight to next missing thing
             brand_state.transition_phase(session, AgentPhase.AWAITING_INPUT)
@@ -171,7 +194,7 @@ async def _dispatch_next_step(
             "Do NOT speak. Just call the tool."
         )
         logger.info(f"[{session.id}] Action: dispatch_palette_tool | Turn: {turn_count}")
-        asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "palette_tool"))
+        _schedule_nudge(session, live_session, nudge, "palette_tool")
 
     # ── PALETTE_TOOL done → fonts (or skip to next missing thing) ────────────
     elif phase == AgentPhase.PALETTE_TOOL and session.palette:
@@ -184,7 +207,10 @@ async def _dispatch_next_step(
                 "Do NOT use generic phrases. Do NOT call any tools. Just speak, then STOP."
             )
             logger.info(f"[{session.id}] Action: dispatch_fonts_speech | Turn: {turn_count}")
-            asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "fonts_speech"))
+            _schedule_nudge(
+                session, live_session, nudge, "fonts_speech",
+                pause_seconds=6,
+            )
         else:
             # fonts already exist — skip to next missing thing
             brand_state.transition_phase(session, AgentPhase.AWAITING_INPUT)
@@ -200,7 +226,7 @@ async def _dispatch_next_step(
             "Do NOT speak. Just call the tool."
         )
         logger.info(f"[{session.id}] Action: dispatch_fonts_tool | Turn: {turn_count}")
-        asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "fonts_tool"))
+        _schedule_nudge(session, live_session, nudge, "fonts_tool")
 
     # ── FONTS_TOOL or IMAGE_TOOL done → next image or closing ─────────────────
     elif phase in (AgentPhase.FONTS_TOOL, AgentPhase.IMAGE_TOOL):
@@ -222,12 +248,14 @@ async def _dispatch_next_step(
                 f"reference the brand's palette or mood. Be specific. "
                 f"Do NOT call any tools. Just speak, then STOP."
             )
+            _pause = 3 if phase == AgentPhase.FONTS_TOOL else 5
             logger.info(
                 f"[{session.id}] Action: dispatch_image_speech | "
                 f"Asset: {next_asset} | Turn: {turn_count}"
             )
-            asyncio.create_task(
-                _wait_and_nudge(session, live_session, nudge, f"image_speech:{next_asset}")
+            _schedule_nudge(
+                session, live_session, nudge, f"image_speech:{next_asset}",
+                pause_seconds=_pause,
             )
         elif not session.voiceover_sent:
             brand_state.transition_phase(session, AgentPhase.VOICEOVER_SPEECH)
@@ -241,8 +269,9 @@ async def _dispatch_next_step(
             logger.info(
                 f"[{session.id}] Action: dispatch_voiceover_speech | Turn: {turn_count}"
             )
-            asyncio.create_task(
-                _wait_and_nudge(session, live_session, nudge, "voiceover_speech")
+            _schedule_nudge(
+                session, live_session, nudge, "voiceover_speech",
+                pause_seconds=3,
             )
 
     # ── IMAGE_SPEECH done → call generate_image ───────────────────────────────
@@ -263,8 +292,8 @@ async def _dispatch_next_step(
                 f"[{session.id}] Action: dispatch_image_tool | "
                 f"Asset: {next_asset} | Turn: {turn_count}"
             )
-            asyncio.create_task(
-                _wait_and_nudge(session, live_session, nudge, f"image_tool:{next_asset}")
+            _schedule_nudge(
+                session, live_session, nudge, f"image_tool:{next_asset}",
             )
 
     # ── VOICEOVER_SPEECH done → call generate_voiceover ──────────────────────
@@ -280,7 +309,7 @@ async def _dispatch_next_step(
             "Do NOT speak. Call the tool immediately."
         )
         logger.info(f"[{session.id}] Action: dispatch_voiceover_tool | Turn: {turn_count}")
-        asyncio.create_task(_wait_and_nudge(session, live_session, nudge, "voiceover_tool"))
+        _schedule_nudge(session, live_session, nudge, "voiceover_tool")
 
     # ── Legacy AWAITING_INPUT fallback for user-interrupt recovery ────────────
     elif phase == AgentPhase.AWAITING_INPUT and session.brand_name and not session.zip_url:
@@ -297,8 +326,8 @@ async def _dispatch_next_step(
                 "End with 'Let me build out the full brand identity.' "
                 "Do NOT call any tools. Just speak, then STOP."
             )
-            asyncio.create_task(
-                _wait_and_nudge(session, live_session, nudge, "reveal_speech_recovery")
+            _schedule_nudge(
+                session, live_session, nudge, "reveal_speech_recovery",
             )
         elif not session.palette:
             brand_state.transition_phase(session, AgentPhase.PALETTE_SPEECH)
@@ -307,8 +336,8 @@ async def _dispatch_next_step(
                 "Say ONE sentence about the palette direction — mention a specific hue or mood. "
                 "Do NOT call any tools. Just speak, then STOP."
             )
-            asyncio.create_task(
-                _wait_and_nudge(session, live_session, nudge, "palette_speech_recovery")
+            _schedule_nudge(
+                session, live_session, nudge, "palette_speech_recovery",
             )
         elif not session.font_suggestion:
             brand_state.transition_phase(session, AgentPhase.FONTS_SPEECH)
@@ -317,8 +346,8 @@ async def _dispatch_next_step(
                 "Say ONE sentence connecting typography to this brand's personality. "
                 "Do NOT call any tools. Just speak, then STOP."
             )
-            asyncio.create_task(
-                _wait_and_nudge(session, live_session, nudge, "fonts_speech_recovery")
+            _schedule_nudge(
+                session, live_session, nudge, "fonts_speech_recovery",
             )
         elif remaining_types:
             next_asset = remaining_types[0]
@@ -333,10 +362,8 @@ async def _dispatch_next_step(
                 f"Say ONE sentence teasing the creative direction for the {label}. "
                 f"Do NOT call any tools. Just speak, then STOP."
             )
-            asyncio.create_task(
-                _wait_and_nudge(
-                    session, live_session, nudge, f"image_speech_recovery:{next_asset}"
-                )
+            _schedule_nudge(
+                session, live_session, nudge, f"image_speech_recovery:{next_asset}",
             )
         elif not session.voiceover_sent:
             brand_state.transition_phase(session, AgentPhase.VOICEOVER_SPEECH)
@@ -345,8 +372,8 @@ async def _dispatch_next_step(
                 "Say ONE sentence introducing Anna who will narrate the brand story. "
                 "Do NOT call any tools. Just speak, then STOP."
             )
-            asyncio.create_task(
-                _wait_and_nudge(session, live_session, nudge, "voiceover_speech_recovery")
+            _schedule_nudge(
+                session, live_session, nudge, "voiceover_speech_recovery",
             )
         logger.info(
             f"[{session.id}] Action: dispatch_awaiting_input_recovery | "

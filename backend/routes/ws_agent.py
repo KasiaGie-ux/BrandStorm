@@ -466,6 +466,12 @@ async def agent_loop(
                                         brand_state.transition_phase(
                                             session, AgentPhase.REVEAL_TOOL
                                         )
+                                        # Name selection = user intent — clear barge-in
+                                        # flag so dispatch_retry_after_tool can proceed.
+                                        # (The barge-in from send_client_content's
+                                        # turn_complete=True re-sets awaiting_feedback
+                                        # AFTER ws_receive.py clears it — race condition.)
+                                        session.awaiting_feedback = False
                                     elif _fc.name == "generate_palette":
                                         brand_state.transition_phase(
                                             session, AgentPhase.PALETTE_TOOL

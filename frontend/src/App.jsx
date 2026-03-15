@@ -513,6 +513,8 @@ export default function App() {
         // Live API native barge-in: user spoke, server stopped generating.
         // Flush the audio queue immediately so agent stops mid-word.
         audioPlayback.flush();
+        turnActiveRef.current = false;
+        eventQueue.onTurnComplete();
         break;
 
       case 'user_voice_text':

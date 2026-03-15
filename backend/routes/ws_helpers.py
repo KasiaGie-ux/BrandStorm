@@ -125,6 +125,7 @@ async def _wait_and_nudge(
     nudge: str,
     label: str,
     timeout: float = 30.0,
+    pause_seconds: float = 0,
 ) -> None:
     """Wait for frontend to signal it finished showing the current turn's
     visual events + audio, then send the next auto-continue nudge.
@@ -133,19 +134,33 @@ async def _wait_and_nudge(
     completes, which sets ``session.frontend_ready``.  If no audio was
     played for the turn the frontend fires a fallback after 800 ms.
 
+    ``pause_seconds`` adds extra delay after frontend_ready — gives users
+    time to provide feedback before the next step fires.
+
     Guards against stale nudges: if the user interrupted (barge-in) or
     the session is awaiting feedback we silently drop the nudge.
     """
+    # Don't clear before waiting — if audio_playback_done already arrived
+    # (event set between tool completion and nudge creation), proceed immediately.
+    # Clear AFTER consuming so the next nudge cycle starts clean.
+    if not session.frontend_ready.is_set():
+        try:
+            await asyncio.wait_for(session.frontend_ready.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"[{session.id}] {label}: frontend_ready timeout ({timeout}s), proceeding"
+            )
     session.frontend_ready.clear()
 
-    try:
-        await asyncio.wait_for(session.frontend_ready.wait(), timeout=timeout)
-    except asyncio.TimeoutError:
-        logger.warning(
-            f"[{session.id}] {label}: frontend_ready timeout ({timeout}s), proceeding"
+    # Feedback pause — give user time to speak before next step
+    if pause_seconds > 0:
+        logger.info(
+            f"[{session.id}] {label}: pausing {pause_seconds}s for feedback"
         )
+        await asyncio.sleep(pause_seconds)
 
-    # Stale-nudge guard (FIX 10: only interrupt/feedback, not user_speaking)
+    # Stale-nudge guard — re-checked after pause so user feedback during
+    # the wait window is respected.
     if session.interrupt_text or session.awaiting_feedback:
         logger.info(f"[{session.id}] {label}: cancelled (interrupt/feedback)")
         return

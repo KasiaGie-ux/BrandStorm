@@ -315,7 +315,7 @@ class ToolExecutor:
         }
         result = {
             "status": "success",
-            "message": "Done. Do NOT speak.",
+            "message": "Done.",
         }
         return result, event
 
@@ -571,7 +571,7 @@ class ToolExecutor:
 
         result = {
             "status": "success",
-            "message": "Done. Do NOT speak.",
+            "message": "Done.",
             "mood": mood,
             "style_anchor": style_anchor,
             "product_colors": product_colors,

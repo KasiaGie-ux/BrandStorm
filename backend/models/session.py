@@ -171,6 +171,9 @@ class Session:
         # Initialize once here — never reassigned elsewhere.
         # Both _wait_and_nudge and _tool_background only call .clear()/.set().
         self.frontend_ready = asyncio.Event()
+        # Tracks the current in-flight nudge task for serialization.
+        # _schedule_nudge cancels stale tasks before creating new ones.
+        self._nudge_task: asyncio.Task | None = None
 
     @property
     def total_assets(self) -> int:

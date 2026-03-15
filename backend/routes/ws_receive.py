@@ -147,6 +147,7 @@ async def receive_loop(
                     and not session.tagline
                     and session.phase in _name_chosen_phases
                 ):
+                    session.awaiting_feedback = False
                     brand_state.transition_phase(session, AgentPhase.REVEAL_SPEECH)
                     wrapped = (
                         f"USER INPUT: {text}\n"
