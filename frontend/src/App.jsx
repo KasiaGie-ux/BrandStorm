@@ -334,12 +334,13 @@ export default function App() {
           setFirstTurnDone(true);
           launchIntroRef.current = { opener: launchTextRef.current, intro: '' };
         }
+        setInputLocked(false);
         addMessage({ type: 'agent_turn_complete' });
         turnActiveRef.current = false;
         eventQueue.onTurnComplete();
         // Restore mic after agent finishes presenting (identity/palette/fonts reveal)
         window.dispatchEvent(new CustomEvent('agent-presenting-done'));
-        if (micWasActiveRef.current && !inputLocked) {
+        if (micWasActiveRef.current) {
           micWasActiveRef.current = false;
           window.dispatchEvent(new CustomEvent('resume-mic'));
         }
@@ -357,7 +358,7 @@ export default function App() {
             }));
             window.dispatchEvent(new CustomEvent('stop-mic'));
           }
-          if (event.tool === 'generate_image' || event.tool === 'generate_voiceover') {
+          if (['generate_image', 'generate_voiceover', 'set_brand_identity', 'set_palette', 'set_fonts'].includes(event.tool)) {
             setInputLocked(true);
           }
         }

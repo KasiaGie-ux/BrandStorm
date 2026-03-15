@@ -21,8 +21,6 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
   const [input, setInput] = useState('');
   const [showOverlay, setShowOverlay] = useState(false);
   const [imageOverlay, setImageOverlay] = useState(null);
-  const [micMutedByAgent, setMicMutedByAgent] = useState(false);
-
   // Stable ref so onaudioprocess closure always reads the latest getIsPlaying
   // without causing useAudioInput to recreate its processor on every render.
   const getIsPlayingRef = useRef(null);
@@ -65,33 +63,19 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
     const onQueryMic = (e) => {
       if (e.detail?.callback) e.detail.callback(audioInput.isRecording);
     };
-    let mutedTimer = null;
     const onStopMic = () => {
       if (audioInput.isRecording) audioInput.stop();
-      setMicMutedByAgent(true);
-      // Safety: clear after 15s max in case agent_turn_complete never arrives
-      clearTimeout(mutedTimer);
-      mutedTimer = setTimeout(() => setMicMutedByAgent(false), 15000);
     };
     const onResumeMic = () => {
       if (!audioInput.isRecording) audioInput.start();
-      setMicMutedByAgent(false);
-      clearTimeout(mutedTimer);
-    };
-    const onPresentingDone = () => {
-      setMicMutedByAgent(false);
-      clearTimeout(mutedTimer);
     };
     window.addEventListener('query-mic-state', onQueryMic);
     window.addEventListener('resume-mic', onResumeMic);
     window.addEventListener('stop-mic', onStopMic);
-    window.addEventListener('agent-presenting-done', onPresentingDone);
     return () => {
-      clearTimeout(mutedTimer);
       window.removeEventListener('query-mic-state', onQueryMic);
       window.removeEventListener('resume-mic', onResumeMic);
       window.removeEventListener('stop-mic', onStopMic);
-      window.removeEventListener('agent-presenting-done', onPresentingDone);
     };
   }, [audioInput]);
 
@@ -432,7 +416,7 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
           )}
         </AnimatePresence>
         <AnimatePresence>
-          {(isGenerating || isStopped || micMutedByAgent) && (
+          {(isGenerating || isStopped) && (
             <motion.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
@@ -441,16 +425,14 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
             >
               <div style={{
                 fontSize: 12,
-                color: isStopped ? raw.red : micMutedByAgent ? raw.muted : raw.faint,
+                color: isStopped ? raw.red : raw.faint,
                 fontFamily: fonts.body,
                 fontStyle: 'italic',
                 fontWeight: isStopped ? 600 : 400,
               }}>
                 {isStopped
                   ? 'Session paused — type a message to resume.'
-                  : micMutedByAgent
-                    ? 'Mic off — agent presenting'
-                    : "Don't like something? Tell the agent to change it."}
+                  : "Don't like something? Tell the agent to change it."}
               </div>
             </motion.div>
           )}
@@ -566,6 +548,7 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
             </svg>
           </button>
         </div>
+
       </div>
 
       {/* Overlays */}

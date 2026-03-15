@@ -541,14 +541,14 @@ export default function ResultsScreen({ brandKit, sessionId, onReset }) {
             />
             <AssetCard
               label="Hero Shot"
-              url={getImageUrl('hero_lifestyle')}
-              description={getImageDesc('hero_lifestyle') || 'Hero lifestyle shot'}
+              url={getImageUrl('hero') || getImageUrl('hero_lifestyle')}
+              description={getImageDesc('hero') || getImageDesc('hero_lifestyle') || 'Hero lifestyle shot'}
               delay={2.7}
             />
             <AssetCard
               label="Instagram"
-              url={getImageUrl('instagram_post')}
-              description={getImageDesc('instagram_post') || 'Ready to post'}
+              url={getImageUrl('instagram') || getImageUrl('instagram_post')}
+              description={getImageDesc('instagram') || getImageDesc('instagram_post') || 'Ready to post'}
               aspect="4/5"
               delay={2.8}
             />

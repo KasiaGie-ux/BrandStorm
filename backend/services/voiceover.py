@@ -31,7 +31,7 @@ VOICE_MAP: dict[str, str] = {
 
 DEFAULT_VOICE = "Kore"
 TTS_MODEL = "gemini-2.5-flash-preview-tts"
-TTS_TIMEOUT = 15  # seconds per TTS call
+TTS_TIMEOUT = 60  # seconds per TTS call
 
 # Gemini TTS returns raw PCM: 24kHz, 16-bit, mono (little-endian).
 _PCM_SAMPLE_RATE = 24000

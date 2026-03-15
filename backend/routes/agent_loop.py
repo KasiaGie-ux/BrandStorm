@@ -70,6 +70,7 @@ async def agent_loop(
     try:
         while True:
             async for message in live_session.receive():
+                logger.info(f"[{session.id}] Live API message | sc={bool(message.server_content)} tool={bool(message.tool_call)} setup={bool(getattr(message, 'setup_complete', None))}")
                 # -- Server content: audio, text, transcription --
                 if message.server_content:
                     sc = message.server_content
