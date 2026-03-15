@@ -24,7 +24,19 @@ _MAX_REF_IMAGE_DIM = 1024
 _IMAGE_LABELS: dict[str, str] = {
     "logo": "Brand Logo",
     "hero": "Hero Lifestyle",
+    "hero_lifestyle": "Hero Lifestyle",
     "instagram": "Instagram Post",
+    "instagram_post": "Instagram Post",
+}
+
+# Map from agent asset_type values to canvas element names
+_ASSET_TYPE_TO_ELEMENT: dict[str, str] = {
+    "logo": "logo",
+    "hero_lifestyle": "hero",
+    "instagram_post": "instagram",
+    # keep short aliases for backward compat
+    "hero": "hero",
+    "instagram": "instagram",
 }
 
 
@@ -209,15 +221,7 @@ class ToolExecutor:
             return {"status": "error", "error": "No valid colors provided"}, []
 
         canvas = session.canvas
-        old_palette = canvas.palette.value
         canvas.palette.set(colors, {"mood": mood})
-
-        # If palette changed and images exist, mark them stale
-        if old_palette and old_palette != colors:
-            for img_name in ("logo", "hero", "instagram"):
-                el = canvas.element_by_name(img_name)
-                if el and el.status == ElementStatus.READY:
-                    el.mark_stale()
 
         events = [
             {"type": "palette_reveal", "mood": mood, "colors": colors},
@@ -292,13 +296,15 @@ class ToolExecutor:
         self, session: Session, args: dict,
     ) -> tuple[dict, list[dict]]:
         """Generate a visual asset via Nano Banana Pro."""
-        element_name = args.get("element", "logo")
+        asset_type = args.get("asset_type") or args.get("element", "logo")
+        element_name = _ASSET_TYPE_TO_ELEMENT.get(asset_type, asset_type)
         prompt = args.get("prompt", "")
         style_anchor = args.get("style_anchor", session.canvas.style_anchor or "modern")
+        aspect_ratio = args.get("aspect_ratio") or None
 
         element = session.canvas.element_by_name(element_name)
         if not element:
-            return {"status": "error", "error": f"Unknown element: {element_name}"}, []
+            return {"status": "error", "error": f"Unknown element: {element_name} (asset_type={asset_type})"}, []
 
         element.mark_generating()
         brand_name = session.canvas.name.value or "Brand"
@@ -328,10 +334,24 @@ class ToolExecutor:
         # Enrich prompt with product/logo reference
         enriched_prompt = prompt
         if element_name in ("hero", "instagram") and ref_images:
-            enriched_prompt += (
-                " IMPORTANT: The generated image MUST prominently feature the exact product "
-                "from the reference photo. The brand logo must be clearly visible."
-            )
+            if session.logo_image_bytes:
+                enriched_prompt += (
+                    " CRITICAL PRODUCT FIDELITY: The first reference image is the product. "
+                    "Reproduce it with absolute accuracy — identical shape, proportions, materials, "
+                    "colors, and surface details. Match the lighting and shadows to the scene perfectly. "
+                    "If the original product photo has any imperfections (dirt, creases, poor lighting, "
+                    "low quality) — correct them to produce a flawless, professional studio result. "
+                    "The second reference image is the NEW brand logo — apply it to the product, "
+                    "replacing any original branding. Do NOT show the original product logo/branding."
+                )
+            else:
+                enriched_prompt += (
+                    " CRITICAL PRODUCT FIDELITY: The reference image is the product. "
+                    "Reproduce it with absolute accuracy — identical shape, proportions, materials, "
+                    "colors, and surface details. Match the lighting and shadows to the scene perfectly. "
+                    "If the original product photo has any imperfections (dirt, creases, poor lighting, "
+                    "low quality) — correct them to produce a flawless, professional studio result."
+                )
 
         # Append palette colors if available
         palette = session.canvas.palette.value
@@ -339,6 +359,10 @@ class ToolExecutor:
             hex_list = ", ".join(c.get("hex", "") for c in palette if c.get("hex"))
             if hex_list:
                 enriched_prompt += f" Use these brand colors: {hex_list}."
+        if palette and element_name == "logo":
+            primary = next((c.get("hex") for c in palette if c.get("role") == "primary"), None)
+            if primary:
+                enriched_prompt += f" Use {primary} as the background color."
 
         # Generation context for staleness tracking
         gen_context = {
@@ -349,16 +373,17 @@ class ToolExecutor:
         }
 
         logger.info(
-            f"[{session.id}] generate_image | Element: {element_name} | "
-            f"Prompt: {len(enriched_prompt)} chars | Refs: {len(ref_images)}"
+            f"[{session.id}] generate_image | AssetType: {asset_type} | Element: {element_name} | "
+            f"Prompt: {len(enriched_prompt)} chars | Refs: {len(ref_images)} | AR: {aspect_ratio}"
         )
 
         result = await self._image_gen.generate(
             session_id=session.id,
             prompt=enriched_prompt,
-            asset_type=element_name,
+            asset_type=asset_type,
             brand_name=brand_name,
             style_anchor=style_anchor,
+            aspect_ratio=aspect_ratio,
             reference_images=ref_images if ref_images else None,
         )
 

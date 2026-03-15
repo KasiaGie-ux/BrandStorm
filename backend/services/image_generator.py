@@ -27,7 +27,9 @@ logger = logging.getLogger("brand-agent")
 ASPECT_RATIOS: dict[str, str] = {
     "logo": "1:1",
     "hero_lifestyle": "16:9",
+    "hero": "16:9",
     "instagram_post": "4:5",
+    "instagram": "4:5",
     "packaging": "1:1",
 }
 
@@ -309,10 +311,14 @@ class ImageGenerator:
         # Logo-specific quality preamble
         if asset_type == "logo":
             parts.append(
-                "Professional brand identity design. Clean, modern, memorable. "
-                "NOT clip art, NOT generic icons. Think Pentagram or Sagmeister & Walsh "
-                "quality. Minimalist but distinctive. The logo must work at small sizes. "
-                "Typography-focused with optional symbol. Use the brand's color palette."
+                "A professional brand logo, flat vector style, crisp clean edges. "
+                "Minimalist and distinctive design. Geometric typography, precise letter-spacing, "
+                "balanced composition. Optional simple abstract symbol integrated with the wordmark. "
+                "Solid single-color background. No gradients, no shadows, no 3D effects, no texture, "
+                "no clip art, no generic icons. Ultra-refined, studio-grade graphic design. "
+                "Centered, square. World-class brand identity quality. The level of refinement seen "
+                "in Apple, Google, and Airbnb brand systems. Pixel-perfect precision, intentional "
+                "white space, every element essential."
             )
 
         parts.append(f"Create a professional {asset_type} for the brand '{brand_name}'.")

@@ -63,10 +63,16 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
                 from models.canvas import ElementStatus
                 from services.context_injector import build_context_message as _build_ctx
 
+                _CANVAS_AWARE_NUDGE = (
+                    "Check [CANVAS STATE] above. Find the first STALE or EMPTY element in the pipeline "
+                    "(name → tagline → palette → fonts → logo → hero → instagram → voiceover). "
+                    "Do NOT ask about elements already READY. "
+                    "Say ONE sentence reacting to the result, then ask about that specific next element. STOP. WAIT."
+                )
                 _NUDGE_PER_TOOL = {
-                    "set_brand_identity": "set_brand_identity was called. If name/tagline/story/values/tone are all set, say ONE sentence reacting and ask: 'Want to build the color palette?' STOP. WAIT. If any field is missing, call set_brand_identity again with ALL fields filled.",
-                    "set_palette":        "ONE sentence reacting. Ask: 'Ready to pick typography?' STOP. WAIT.",
-                    "set_fonts":          "ONE sentence reacting to the fonts. Ask: 'Shall we design the logo?' STOP. WAIT.",
+                    "set_brand_identity": _CANVAS_AWARE_NUDGE,
+                    "set_palette":        _CANVAS_AWARE_NUDGE,
+                    "set_fonts":          _CANVAS_AWARE_NUDGE,
                     "generate_image":     "ONE sentence reacting to the image. Ask for feedback. STOP. WAIT.",
                     "propose_names":      "Narrate each name: ONE sentence per name. End third with 'That's my pick.' STOP. WAIT.",
                 }
@@ -92,9 +98,10 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
                         tool_name = tools[0] if tools else ""
                         # generate_voiceover: Anna plays after — watchdog must NOT nudge.
                         # Agent will speak after voiceover_playback_done arrives from frontend.
-                        if tool_name == "generate_voiceover":
+                        # propose_names: agent narrates names autonomously — watchdog must NOT nudge.
+                        if tool_name in ("generate_voiceover", "propose_names"):
                             session.pending_tool_response = None
-                            logger.info(f"[{session_id}] Watchdog skipped for generate_voiceover")
+                            logger.info(f"[{session_id}] Watchdog skipped for {tool_name}")
                             continue
                         nudge_instruction = _NUDGE_PER_TOOL.get(tool_name, _DEFAULT_NUDGE)
                         nudge_text = _build_ctx(

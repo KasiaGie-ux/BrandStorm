@@ -178,6 +178,15 @@ export default function App() {
   const handleWsMessage = useCallback((event) => {
     const { type } = event;
 
+    // Unlock input immediately when image generation finishes — don't wait for queue flush
+    if (event.type === 'image_generated') {
+      setInputLocked(false);
+      if (micWasActiveRef.current) {
+        micWasActiveRef.current = false;
+        window.dispatchEvent(new CustomEvent('resume-mic'));
+      }
+    }
+
     // Delegate visual events to the event queue while audio is playing
     if (eventQueue.enqueue(event)) {
       return;
@@ -239,6 +248,9 @@ export default function App() {
         // add agent_turn_complete to messages before first speech arrives, which would
         // incorrectly flip isFirstTurn and send opening text to chat instead of LaunchSequence.
         const isFirstTurn = !firstSpeechTurnDoneRef.current;
+
+        // If agent accidentally speaks context markers, discard silently
+        if (event.text && event.text.includes('[CANVAS STATE]')) break;
 
         // If empty text, just close any dangling partial without adding new message
         if (!event.text || !event.text.trim()) {
@@ -362,11 +374,7 @@ export default function App() {
           }
           return [...prev, { ...newImg, _id: ++msgIdCounter.current }];
         });
-        setInputLocked(false);
-        if (micWasActiveRef.current) {
-          micWasActiveRef.current = false;
-          window.dispatchEvent(new CustomEvent('resume-mic'));
-        }
+        // setInputLocked(false) handled above in early-unlock block (before event queue)
         break;
       }
 

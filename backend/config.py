@@ -7,7 +7,7 @@ GCP_LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
 USE_VERTEX_AI = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "true").lower() == "true"
 
 # === Image Generation ===
-IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gemini-3-pro-image-preview")        # Nano Banana Pro — best quality, reasoning-driven
+IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gemini-3.1-flash-image-preview")    # primary image generation model
 IMAGE_MODEL_FALLBACK = os.getenv("IMAGE_MODEL_FALLBACK", "gemini-2.5-flash-image")  # Nano Banana — faster, GA
 IMAGE_MODEL_FALLBACK_2 = os.getenv("IMAGE_MODEL_FALLBACK_2", "gemini-2.0-flash-preview-image-generation")  # Flash image gen — separate quota
 

@@ -6,7 +6,21 @@ import MagneticButton from './MagneticButton';
 import Reveal from './Reveal';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-const ACCEPTED_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const ACCEPTED_TYPES = ['image/jpeg', 'image/png'];
+
+// Magic bytes for each allowed type — defends against renamed executables
+const MAGIC_BYTES = {
+  'image/jpeg': [[0xFF, 0xD8, 0xFF]],
+  'image/png':  [[0x89, 0x50, 0x4E, 0x47]],
+};
+
+async function verifyMagicBytes(file) {
+  const buffer = await file.slice(0, 8).arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  const signatures = MAGIC_BYTES[file.type];
+  if (!signatures) return false;
+  return signatures.some(sig => sig.every((b, i) => bytes[i] === b));
+}
 const MAX_CONTEXT_CHARS = 200;
 
 export default function UploadStage({ onBack, onGenerate, dragOnPage }) {
@@ -31,15 +45,24 @@ export default function UploadStage({ onBack, onGenerate, dragOnPage }) {
     return () => clearInterval(i);
   }, [isDragging]);
 
-  const handleFile = useCallback((file) => {
+  const handleFile = useCallback(async (file) => {
     setUploadError(null);
     if (!file) return;
     if (!ACCEPTED_TYPES.includes(file.type)) {
-      setUploadError('Unsupported format. Use PNG, JPG, or WebP.');
+      setUploadError('Unsupported format. Only PNG and JPG are accepted.');
       return;
     }
     if (file.size > MAX_FILE_SIZE) {
       setUploadError('File too large. Maximum size is 10 MB.');
+      return;
+    }
+    if (file.size < 1024) {
+      setUploadError('File too small — minimum 1 KB.');
+      return;
+    }
+    const valid = await verifyMagicBytes(file);
+    if (!valid) {
+      setUploadError('File content does not match its extension. Upload a real PNG or JPG image.');
       return;
     }
     setImageFile(file);
@@ -91,7 +114,7 @@ export default function UploadStage({ onBack, onGenerate, dragOnPage }) {
             </Reveal>
           </div>
 
-          <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp"
+          <input ref={fileRef} type="file" accept="image/png,image/jpeg"
             aria-label="Upload product photo" hidden
             onChange={e => handleFile(e.target.files?.[0])} />
 
@@ -200,7 +223,16 @@ export default function UploadStage({ onBack, onGenerate, dragOnPage }) {
                     }}>{activeDrag ? 'Release' : 'Drop Product Photo'}</div>
                     <div style={{
                       fontSize: 12, color: raw.faint, fontFamily: fonts.body,
-                    }}>or click to browse · PNG, JPG, WebP · max 10 MB</div>
+                      lineHeight: 1.6,
+                    }}>
+                      or click to browse
+                      <br />
+                      PNG or JPG only · max 10 MB · min 1 KB
+                      <br />
+                      <span style={{ fontSize: 10, color: raw.faint, opacity: 0.7 }}>
+                        Product photo on plain or simple background
+                      </span>
+                    </div>
                   </div>
                 </div>
               </Reveal>
@@ -242,7 +274,7 @@ export default function UploadStage({ onBack, onGenerate, dragOnPage }) {
                     position: 'relative', border: `2px solid ${raw.ink}`,
                     display: 'inline-block', maxWidth: '100%',
                   }}>
-                    <input ref={changeRef} type="file" accept="image/png,image/jpeg,image/webp"
+                    <input ref={changeRef} type="file" accept="image/png,image/jpeg"
                       hidden onChange={e => handleFile(e.target.files?.[0])} />
                     <img src={imagePreview} alt="Product"
                       style={{ display: 'block', maxWidth: '100%', maxHeight: 400 }} />

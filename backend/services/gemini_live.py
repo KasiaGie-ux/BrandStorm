@@ -126,27 +126,40 @@ TOOL_DECLARATIONS = types.Tool(
         types.FunctionDeclaration(
             name="generate_image",
             description=(
-                "Generate a brand visual asset. CRITICAL: Say EXACTLY ONE short sentence "
-                "(max 8 words) before calling this tool. Then call immediately. Stop talking."
+                "Generate a brand asset image. Speak ONE evocative sentence "
+                "BEFORE calling. Do NOT say the tool name or parameters."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
-                    "element": types.Schema(
+                    "asset_type": types.Schema(
                         type=types.Type.STRING,
-                        enum=["logo", "hero", "instagram"],
-                        description="Which canvas element to generate.",
+                        enum=["logo", "hero_lifestyle", "instagram_post"],
                     ),
                     "prompt": types.Schema(
                         type=types.Type.STRING,
-                        description="Detailed image generation prompt.",
+                        description=(
+                            "Creative direction for the image. Be specific and visual: "
+                            "describe the feeling, composition, lighting mood, and how "
+                            "it connects to the product. Reference what you see in the "
+                            "product photo. Example: 'warm golden lighting on marble "
+                            "surface, the bottle's amber glass catching the light, "
+                            "editorial intimacy.'"
+                        ),
+                    ),
+                    "aspect_ratio": types.Schema(
+                        type=types.Type.STRING,
+                        enum=["1:1", "4:5", "16:9"],
                     ),
                     "style_anchor": types.Schema(
                         type=types.Type.STRING,
-                        description="Creative style (luxury, modern, eco, energetic, etc.).",
+                        description=(
+                            "Visual style anchor — one word that defines the aesthetic. "
+                            "Examples: luxury, modern, eco, energetic, artisanal, bold."
+                        ),
                     ),
                 },
-                required=["element", "prompt"],
+                required=["asset_type", "prompt", "aspect_ratio", "style_anchor"],
             ),
         ),
 

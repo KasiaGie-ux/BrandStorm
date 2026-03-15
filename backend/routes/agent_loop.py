@@ -95,6 +95,9 @@ async def agent_loop(
                             "type": "agent_turn_complete",
                             "canvas": session.canvas.snapshot(),
                         })
+                        # Agent spoke after generate_image — guard stays until user's
+                        # affirmation is consumed (receive_loop will reset it when
+                        # canvas_key changes after the next tool fires).
 
                 # -- Tool calls from agent --
                 if message.tool_call:
@@ -162,9 +165,22 @@ async def agent_loop(
 
                     # Mark pending — tool_watchdog (in ws.py) will nudge if agent stays silent
                     session.pending_tool_response = tool_names[:]
-                    # Clear next-step dedup guard — tool fired, canvas state will change
-                    session.pending_next_step = None
-                    session.pending_next_step_canvas_key = None
+                    # Clear next-step dedup guard — tool fired, canvas state will change.
+                    # Exception: after generate_image, keep the guard armed with the NEW
+                    # canvas key so the agent's first "what do you think?" question is
+                    # protected — the user's feedback "yes" should not be hijacked by
+                    # [NEXT STEP generate hero] before agent even asks about the image.
+                    if any(t == "generate_image" for t in tool_names):
+                        c = session.canvas
+                        session.pending_next_step = "guarded"
+                        session.pending_next_step_canvas_key = "|".join([
+                            c.name.status, c.tagline.status, c.palette.status,
+                            c.fonts.status, c.logo.status, c.hero.status,
+                            c.instagram.status, c.voiceover.status,
+                        ])
+                    else:
+                        session.pending_next_step = None
+                        session.pending_next_step_canvas_key = None
                     logger.info(f"[{session.id}] Watchdog armed | Tools: {tool_names}")
 
 

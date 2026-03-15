@@ -361,6 +361,7 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
                 onVoiceoverEnd={onVoiceoverEnd}
                 nameNarrationDone={nameNarrationDone}
                 proposalsFrozen={proposalsFrozen}
+                onStopAudio={() => audioPlayback?.flush()}
               />
             );
           })}

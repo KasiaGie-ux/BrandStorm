@@ -125,12 +125,17 @@ async def receive_loop(
                 lower = text.lower().strip()
                 if lower.startswith("i choose "):
                     chosen = text[len("i choose "):].strip()
+                    # Mark name as READY on canvas immediately so _resolve_next_step
+                    # can see it and offer set_brand_identity on the next affirmation.
+                    session.canvas.name.set(chosen)
                     details = (
                         f"User chose the brand name: '{chosen}'.\n"
                         f"Say ONE confident sentence about why this name fits — reference the product visuals.\n"
                         f"Then ask: 'Should I build out the full brand identity?' STOP. Do NOT call any tools yet."
                     )
                     trigger = "name_selected"
+                    # Disarm propose_names watchdog — name was chosen, narration not needed
+                    session.pending_tool_response = None
                 elif "user has entered the studio" in lower:
                     details = (
                         "User has entered the Studio. Execute Step 2 of your flow:\n"
@@ -149,17 +154,17 @@ async def receive_loop(
                             c.fonts.status, c.logo.status, c.hero.status,
                             c.instagram.status, c.voiceover.status,
                         ])
-                        # Deduplicate: skip if same step was already sent AND canvas
-                        # hasn't advanced. User is confirming something else (e.g. tagline
-                        # change, tone change) — let agent handle it without next-step override.
-                        if (next_step == session.pending_next_step
+                        # Guard: if canvas hasn't changed since last [NEXT STEP] (or since
+                        # last generate_image), the user's affirmation is confirming something
+                        # else (e.g. palette change, tagline change) — don't inject [NEXT STEP].
+                        if (session.pending_next_step is not None
                                 and canvas_key == session.pending_next_step_canvas_key):
                             logger.info(
-                                f"[{session.id}] Affirmation skipped — same canvas state, "
-                                f"next step already pending. Agent is mid-conversation."
+                                f"[{session.id}] Affirmation — same canvas state, "
+                                f"sending as user_approved without NEXT STEP (agent is mid-conversation)"
                             )
-                            details = text
-                            trigger = "user_message"
+                            details = f"User said: '{text}'. This confirms your last question or proposal. Act on it now."
+                            trigger = "user_approved"
                         else:
                             session.pending_next_step = next_step
                             session.pending_next_step_canvas_key = canvas_key
