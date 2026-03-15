@@ -16,7 +16,7 @@ const DISPLAY_TYPES = [
   'voiceover_greeting', 'voiceover_story',
 ];
 
-export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, imagePreview, onVoiceoverEnd, audioPlayback }) {
+export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, imagePreview, onVoiceoverEnd, audioPlayback, brandCanvas }) {
   const scrollRef = useRef(null);
   const [input, setInput] = useState('');
   const [showOverlay, setShowOverlay] = useState(false);
@@ -51,16 +51,57 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
     }
   }, [audioInput, audioPlayback]);
 
-  // Use the LAST brand name/tagline (supports name changes mid-flow)
-  const brandName = [...messages].reverse().find(m => m.type === 'brand_name_reveal')?.name
+  // Canvas-first: read brand name and tagline from canvas, fall back to messages
+  const brandName = brandCanvas?.name?.value
+    || [...messages].reverse().find(m => m.type === 'brand_name_reveal')?.name
     || [...messages].reverse().find(m => m.type === 'brand_reveal')?.name || '';
-  const tagline = [...messages].reverse().find(m => m.type === 'tagline_reveal')?.tagline || '';
+  const tagline = brandCanvas?.tagline?.value
+    || [...messages].reverse().find(m => m.type === 'tagline_reveal')?.tagline || '';
 
+  // Canvas-first: derive progress from canvas element statuses
   const completedEvents = [];
-  messages.forEach(m => {
-    if (m.type === 'palette_reveal' || m.type === 'palette_ready') completedEvents.push('palette_reveal');
-    if (m.type === 'image_generated') completedEvents.push(`image:${m.asset_type}`);
-  });
+  if (brandCanvas) {
+    if (brandCanvas.palette?.status === 'ready') completedEvents.push('palette_reveal');
+    if (brandCanvas.logo?.status === 'ready') completedEvents.push('image:logo');
+    if (brandCanvas.hero?.status === 'ready') completedEvents.push('image:hero');
+    if (brandCanvas.instagram?.status === 'ready') completedEvents.push('image:instagram');
+  } else {
+    messages.forEach(m => {
+      if (m.type === 'palette_reveal' || m.type === 'palette_ready') completedEvents.push('palette_reveal');
+      if (m.type === 'image_generated') completedEvents.push(`image:${m.asset_type}`);
+    });
+  }
+
+  // Canvas-aware stale detection: hide messages for stale elements
+  const isStaleByCanvas = (msg) => {
+    if (!brandCanvas) return false;
+    switch (msg.type) {
+      case 'image_generated': {
+        const t = msg.asset_type;
+        if (!t) return false;
+        const key = t === 'hero_lifestyle' ? 'hero' : t === 'instagram_post' ? 'instagram' : t;
+        return brandCanvas[key]?.status === 'stale';
+      }
+      case 'palette_reveal':
+      case 'palette_ready':
+        return brandCanvas.palette?.status === 'stale';
+      case 'font_suggestion':
+        return brandCanvas.fonts?.status === 'stale';
+      case 'brand_name_reveal':
+      case 'brand_name_reveal_rationale':
+        return brandCanvas.name?.status === 'stale';
+      case 'tagline_reveal':
+        return brandCanvas.tagline?.status === 'stale';
+      case 'brand_story':
+        return brandCanvas.story?.status === 'stale';
+      case 'brand_values':
+        return brandCanvas.values?.status === 'stale';
+      case 'tone_of_voice':
+        return brandCanvas.tone?.status === 'stale';
+      default:
+        return false;
+    }
+  };
 
   const scrollToBottom = useCallback(() => {
     if (scrollRef.current) {
@@ -127,23 +168,13 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
     return -1;
   })();
 
-  // Find the index of the LAST brand_name_reveal to detect name changes.
-  // Images from before the last name reveal are stale and should be hidden.
-  const lastRevealIdx = (() => {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].type === 'brand_name_reveal') return i;
-    }
-    return -1;
-  })();
-  // Count how many brand_name_reveal events exist (> 1 means name changed)
-  const revealCount = messages.filter(m => m.type === 'brand_name_reveal').length;
-
   const displayMessages = messages.filter((m, i) => {
     if (!DISPLAY_TYPES.includes(m.type)) return false;
     // Hide tool_invoked spinner if a result for this tool exists later in messages
     if (m.type === 'tool_invoked' && m.tool) {
-      // These tools are instant or background — never show their spinner
-      if (['generate_palette', 'generate_voiceover', 'propose_names', 'reveal_brand_identity', 'suggest_fonts'].includes(m.tool)) return false;
+      const instantTools = ['generate_palette', 'generate_voiceover', 'propose_names',
+        'reveal_brand_identity', 'suggest_fonts', 'set_brand_identity', 'set_palette', 'set_fonts'];
+      if (instantTools.includes(m.tool)) return false;
       const resultType = TOOL_RESULT_MAP[m.tool];
       if (resultType) {
         const hasResult = messages.slice(i + 1).some(later => later.type === resultType);
@@ -154,16 +185,8 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
     if (m.type === 'agent_text' && hideRanges.some(([start, end]) => i > start && i < end)) {
       return false;
     }
-    // After a name change, hide stale structured events from the previous brand
-    // (images, palette, fonts, old brand reveal, old values, etc.)
-    if (revealCount > 1 && lastRevealIdx !== -1 && i < lastRevealIdx) {
-      const staleTypes = [
-        'image_generated', 'palette_reveal', 'font_suggestion',
-        'brand_name_reveal', 'tagline_reveal', 'brand_story',
-        'brand_values', 'tone_of_voice', 'name_proposals',
-      ];
-      if (staleTypes.includes(m.type)) return false;
-    }
+    // Canvas-aware: hide messages for elements the canvas marks as stale
+    if (isStaleByCanvas(m)) return false;
     return true;
   });
   // Countdown starts only after agent finishes narrating all 3 names.
@@ -291,7 +314,7 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
           }}>{phase || 'INIT'}</span>
         </div>
 
-        <ProgressTracker phase={phase} completedEvents={completedEvents} />
+        <ProgressTracker phase={phase} completedEvents={completedEvents} brandCanvas={brandCanvas} />
       </div>
 
       {/* Messages */}

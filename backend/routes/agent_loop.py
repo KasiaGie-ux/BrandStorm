@@ -1,0 +1,155 @@
+"""Agent loop — receives from Gemini Live API, forwards to frontend.
+
+Simple loop: receive → process → forward. No dispatch, no phases, no nudges.
+The agent is autonomous — this loop just bridges Live API and WebSocket.
+"""
+
+import asyncio
+import base64
+import json
+import logging
+
+from fastapi import WebSocket
+from google.genai import types
+
+from config import SESSION_TIMEOUT_SEC
+from models.session import Session
+from services.context_injector import build_context_message
+from services.tool_executor import ToolExecutor
+
+logger = logging.getLogger("brand-agent")
+
+# No _SILENCE_FALLBACK_SEC needed anymore
+
+
+async def send_json(ws: WebSocket, data: dict) -> None:
+    """Send JSON to frontend WebSocket, silently ignoring closed connections."""
+    try:
+        await ws.send_json(data)
+    except Exception:
+        pass
+
+
+async def agent_loop(
+    ws: WebSocket,
+    live_session,
+    session: Session,
+    tool_executor: ToolExecutor,
+) -> None:
+    """Receive Live API messages and forward to frontend.
+
+    The agent is autonomous. This loop:
+    1. Receives audio/text/tool_call from Live API
+    2. Forwards audio/text to frontend
+    3. Executes tool calls and returns results
+    4. Injects updated canvas context after tool results
+    """
+
+
+    try:
+        while True:
+            async for message in live_session.receive():
+                # -- Server content: audio, text, transcription --
+                if message.server_content:
+                    sc = message.server_content
+
+                    # Barge-in: agent was interrupted by user
+                    if getattr(sc, "interrupted", False):
+                        await send_json(ws, {"type": "agent_audio_interrupted"})
+                        continue
+
+                    # Forward audio chunks
+                    if sc.model_turn and sc.model_turn.parts:
+                        for part in sc.model_turn.parts:
+                            if part.inline_data and part.inline_data.mime_type.startswith("audio/"):
+                                await send_json(ws, {
+                                    "type": "agent_audio",
+                                    "data": base64.b64encode(part.inline_data.data).decode(),
+                                    "mime_type": part.inline_data.mime_type,
+                                })
+
+                    # Input transcription (user speech)
+                    if getattr(sc, "input_transcription", None):
+                        text = getattr(sc.input_transcription, "text", "")
+                        if text and text.strip():
+                            session.add_transcript("user", text.strip())
+                            await send_json(ws, {"type": "user_voice_text", "text": text.strip()})
+
+                    # Output transcription (agent speech)
+                    if getattr(sc, "output_transcription", None):
+                        text = getattr(sc.output_transcription, "text", "")
+                        if text:
+                            await send_json(ws, {
+                                "type": "agent_text",
+                                "text": text,
+                                "partial": not getattr(sc, "turn_complete", False),
+                            })
+
+                    # Turn complete
+                    if getattr(sc, "turn_complete", False):
+                        await send_json(ws, {
+                            "type": "agent_turn_complete",
+                            "canvas": session.canvas.snapshot(),
+                        })
+
+                # -- Tool calls from agent --
+                if message.tool_call:
+                    all_responses = []
+                    all_events = []
+                    tool_names = []
+
+                    for fc in message.tool_call.function_calls:
+                        # Notify frontend of tool invocation
+                        await send_json(ws, {
+                            "type": "tool_invoked",
+                            "tool": fc.name,
+                            "args": dict(fc.args) if fc.args else {},
+                        })
+
+                        # Execute tool (updates canvas internally)
+                        fn_response, frontend_events = await tool_executor.execute(
+                            session, fc,
+                        )
+                        all_responses.append(fn_response)
+                        all_events.extend(frontend_events)
+                        tool_names.append(fc.name)
+
+                    # Send all frontend events
+                    for event in all_events:
+                        await send_json(ws, event)
+
+                    # Return ALL tool results to Live API in one batch
+                    await live_session.send_tool_response(
+                        function_responses=all_responses,
+                    )
+                    logger.info(f"[{session.id}] Batch tool response | Tools: {tool_names}")
+
+                    # Inject updated canvas context so the agent knows the
+                    # current state and continues the conversation.  Without
+                    # this the Live API closes the stream immediately after
+                    # the tool response.
+                    tools_summary = ", ".join(tool_names)
+                    context = build_context_message(
+                        session,
+                        trigger="tool_results",
+                        details=f"Tools completed: {tools_summary}. Continue the conversation.",
+                    )
+                    await live_session.send_client_content(
+                        turns=[types.Content(
+                            role="user",
+                            parts=[types.Part.from_text(text=context)],
+                        )],
+                        turn_complete=True,
+                    )
+
+        # If we reach here the Live API stream ended (server closed it)
+        logger.warning(f"[{session.id}] Live API stream ended (receive generator exhausted)")
+
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.error(f"[{session.id}] agent_loop error: {e}")
+        await send_json(ws, {"type": "error", "message": str(e)})
+        raise
+    finally:
+        pass

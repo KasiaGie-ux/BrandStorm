@@ -37,11 +37,8 @@ async def upload_product_image(file: UploadFile = File(...)):
         image_bytes=image_bytes,
         mime_type=mime_type,
     )
-    session.product_image_url = url
-
     logger.info(
-        f"[{session_id}] Phase: INIT | Action: image_uploaded | "
-        f"Size: {len(image_bytes) / 1024:.0f}KB | Type: {mime_type}"
+        f"[{session_id}] Image uploaded | Size: {len(image_bytes) / 1024:.0f}KB | Type: {mime_type}"
     )
     return {"session_id": session_id, "image_url": url}
 
@@ -68,12 +65,15 @@ async def download_zip(session_id: str):
             content={"error": "Session not found"},
         )
 
-    if not session.zip_url:
-        # Create ZIP on demand
-        if session.asset_urls:
-            session.zip_url = await _storage.create_zip(
+    zip_url = None  # ZIP is created on demand
+    asset_urls = session.canvas.asset_urls
+    brand_name = session.canvas.name.value or "brand"
+
+    if not zip_url:
+        if asset_urls:
+            zip_url = await _storage.create_zip(
                 session_id=session_id,
-                asset_urls=session.asset_urls,
+                asset_urls=asset_urls,
             )
         else:
             return JSONResponse(
@@ -87,11 +87,11 @@ async def download_zip(session_id: str):
         return FileResponse(
             path=str(local_path),
             media_type="application/zip",
-            filename=f"{session.brand_name or 'brand'}_kit.zip",
+            filename=f"{brand_name}_kit.zip",
         )
 
     return JSONResponse(
-        content={"zip_url": session.zip_url},
+        content={"zip_url": zip_url},
     )
 
 

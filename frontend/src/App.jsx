@@ -20,6 +20,7 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [phase, setPhase] = useState('INIT');
   const [brandKit, setBrandKit] = useState(null);
+  const [brandCanvas, setBrandCanvas] = useState(null);
   const [wsStatus, setWsStatus] = useState('disconnected');
   const [imagePreview, setImagePreview] = useState(null);
   const [firstAgentText, setFirstAgentText] = useState(null);
@@ -147,6 +148,16 @@ export default function App() {
     return s;
   }, []);
 
+  // Normalizes spaces when Gemini chunks missing them around punctuation/quotes
+  const cleanSpacing = useCallback((text) => {
+    if (!text) return text;
+    return text
+      // product.My -> product. My
+      // innovation."Verdant -> innovation. "Verdant
+      .replace(/([.!?])([A-Z"'])/g, '$1 $2')
+      .replace(/  +/g, ' ');
+  }, []);
+
   const msgIdCounter = useRef(0);
   const addMessage = useCallback((msg) => {
     setMessages(prev => {
@@ -220,92 +231,78 @@ export default function App() {
 
         // If empty text, just close any dangling partial without adding new message
         if (!event.text || !event.text.trim()) {
-          setMessages(prev => {
-            const last = prev[prev.length - 1];
-            if (last && last.type === 'agent_text' && last._partial) {
-              const updated = [...prev];
-              updated[updated.length - 1] = { ...last, _partial: false };
-              return updated;
-            }
-            return prev;
-          });
+          if (!event.partial) {
+            setMessages(prev => {
+              const lastIdx = prev.findLastIndex(m => m.type === 'agent_text' && m._partial);
+              if (lastIdx !== -1) {
+                const updated = [...prev];
+                updated[lastIdx] = { ...updated[lastIdx], _partial: false };
+                return updated;
+              }
+              return prev;
+            });
+          }
           break;
         }
 
         if (isFirstTurn) {
           // ANALYZING turn = opener + intro only. Feed to LaunchSequence, never to chat.
-          if (event.partial) {
-            const prev_text = launchTextRef.current || '';
-            const needs_space = prev_text.length > 0 && (
-              (/[.!?]$/.test(prev_text) && /^[A-Za-z]/.test(event.text)) ||
-              (/[a-z]$/.test(prev_text) && /^[A-Z]/.test(event.text))
-            );
-            launchTextRef.current = prev_text + (needs_space ? ' ' : '') + event.text;
-          } else if (!launchTextRef.current) {
-            // No partials received — use final text as fallback
-            launchTextRef.current = event.text;
-          }
-          // else: partial:false AFTER partials — skip, accumulated text is correct
-          // (raw Gemini text has spacing artifacts like "L uminous" that break parsing)
+          const prev_text = launchTextRef.current || '';
+          const needs_space = prev_text.length > 0 && event.text.length > 0 && (
+            (/[.!?]$/.test(prev_text) && /^[A-Za-z]/.test(event.text)) ||
+            (/[a-z]$/.test(prev_text) && /^[A-Z]/.test(event.text))
+          );
+          launchTextRef.current = prev_text + (needs_space ? ' ' : '') + event.text;
           const acc = launchTextRef.current;
           if (acc.trim()) setFirstAgentText(acc);
           break; // first turn never goes to chat
         }
 
         // --- Normal turns (> first turn) ---
-        if (event.partial) {
-          turnActiveRef.current = true;
-          setMessages(prev => {
-            const last = prev[prev.length - 1];
-            if (last && last.type === 'agent_text' && last._partial) {
-              const updated = [...prev];
-              const prev_text = last.text;
-              const needs_space = prev_text.length > 0 && (
-                (/[.!?]$/.test(prev_text) && /^[A-Za-z]/.test(event.text)) ||
+        turnActiveRef.current = true;
+        setMessages(prev => {
+          let updatedText = event.text;
+          // Find the last active partial text bubble
+          const lastIdx = prev.findLastIndex(m => m.type === 'agent_text' && m._partial);
+          
+          if (lastIdx !== -1) {
+             const last = prev[lastIdx];
+             const prev_text = last.text;
+             const needs_space = prev_text.length > 0 && event.text.length > 0 && (
+                (/[.!?]$/.test(prev_text) && /^[A-Za-z"']/.test(event.text)) ||
                 (/[a-z]$/.test(prev_text) && /^[A-Z]/.test(event.text))
-              );
-              updated[updated.length - 1] = { ...last, text: prev_text + (needs_space ? ' ' : '') + event.text };
-              return updated;
-            }
-            return [...prev, { type: 'agent_text', text: event.text, _partial: true, _id: ++msgIdCounter.current }];
-          });
-        } else {
-          // Strip known opener+intro from the final text — catches the case where the
-          // agent starts the analysis turn by repeating its intro before the analysis.
-          const outputText = stripKnownIntro(event.text);
-          setMessages(prev => {
-            if (!outputText.trim()) {
-              // Close any dangling partial — search backwards past spinners
-              for (let i = prev.length - 1; i >= 0; i--) {
-                const m = prev[i];
-                if (m.type === 'user' || m.type === 'agent_turn_complete') break;
-                if (m.type === 'agent_text' && m._partial) {
-                  const updated = [...prev];
-                  updated[i] = { ...m, _partial: false };
-                  return updated;
-                }
-              }
-              return prev;
-            }
-            // First pass: find a dangling _partial: true bubble (may be buried under
-            // tool_invoked spinners). Always prefer that over any finalized bubble.
-            for (let i = prev.length - 1; i >= 0; i--) {
-              const m = prev[i];
-              if (m.type === 'user' || m.type === 'agent_turn_complete') break;
-              if (m.type === 'agent_text' && m._partial) {
-                const updated = [...prev];
-                updated[i] = { ...m, text: outputText, _partial: false };
-                return updated;
-              }
-            }
-            // No partial found — add as new message (don't stomp a finalized bubble).
-            return [...prev, { type: 'agent_text', text: outputText, _partial: false, _id: ++msgIdCounter.current }];
-          });
-        }
+             );
+             updatedText = prev_text + (needs_space ? ' ' : '') + event.text;
+             
+             const finalOutputText = cleanSpacing(stripKnownIntro(updatedText));
+             const updated = [...prev];
+             // event.partial handles closing if false, otherwise remains partial
+             updated[lastIdx] = { ...last, text: finalOutputText, _partial: event.partial };
+             return updated;
+          } else {
+             const finalOutputText = cleanSpacing(stripKnownIntro(event.text));
+             return [...prev, { type: 'agent_text', text: finalOutputText, _partial: event.partial, _id: ++msgIdCounter.current }];
+          }
+        });
         break;
       }
 
+      case 'canvas_update':
+        // Canvas state applied on agent_turn_complete to sync with event queue flush.
+        // Applying here mid-turn would hide stale messages before replacements render.
+        break;
+
       case 'agent_turn_complete':
+        setMessages(prev => {
+          const lastIdx = prev.findLastIndex(m => m.type === 'agent_text' && m._partial);
+          if (lastIdx !== -1) {
+            const updated = [...prev];
+            updated[lastIdx] = { ...updated[lastIdx], _partial: false };
+            return updated;
+          }
+          return prev;
+        });
+        if (event.canvas) setBrandCanvas(event.canvas);
         if (event.phase) setPhase(event.phase);
         if (!messagesRef.current.some(m => m.type === 'agent_turn_complete')) {
           setFirstTurnDone(true);
@@ -593,6 +590,7 @@ export default function App() {
     messagesRef.current = [];
     setPhase('INIT');
     setBrandKit(null);
+    setBrandCanvas(null);
     setFirstAgentText(null);
     setFirstTurnDone(false);
     launchTextRef.current = '';
@@ -627,7 +625,20 @@ export default function App() {
 
   const handleLaunchComplete = useCallback(() => {
     setScreen(SCREENS.STUDIO);
-  }, []);
+    if (!sessionId) return;
+    
+    const sysMsg = { 
+      type: 'text_input', 
+      text: 'SYSTEM: User has entered the Studio. You may now perform your visual analysis and propose names.' 
+    };
+
+    if (wsRef.current?.isConnected) {
+      wsRef.current.sendMessage(sysMsg);
+    } else {
+      pendingResumeRef.current = sysMsg.text;
+      if (wsRef.current) wsRef.current.connect(sessionId);
+    }
+  }, [sessionId]);
 
   const handleSendMessage = useCallback((msg) => {
     // Barge-in: stop agent audio when user sends anything
@@ -656,6 +667,7 @@ export default function App() {
     setMessages([]);
     setPhase('INIT');
     setBrandKit(null);
+    setBrandCanvas(null);
     imageFileRef.current = null;
     pendingResumeRef.current = null;
     awaitingFirstConnect.current = false;
@@ -772,6 +784,7 @@ export default function App() {
               imagePreview={imagePreview}
               onVoiceoverEnd={handleVoiceoverEnd}
               audioPlayback={audioPlayback}
+              brandCanvas={brandCanvas}
             />
           </motion.div>
         )}

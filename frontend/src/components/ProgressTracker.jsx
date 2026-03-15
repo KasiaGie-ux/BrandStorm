@@ -3,26 +3,34 @@ import { raw, fonts, easeCurve } from '../styles/tokens';
 
 const STEPS = [
   { key: 'analysis', label: 'Analysis', phases: ['ANALYZING'] },
-  { key: 'name', label: 'Name', phases: ['PROPOSING', 'AWAITING_INPUT'] },
-  { key: 'palette', label: 'Palette', events: ['palette_reveal'] },
-  { key: 'logo', label: 'Logo', events: ['image:logo'] },
-  { key: 'hero', label: 'Hero', events: ['image:hero_lifestyle'] },
-  { key: 'instagram', label: 'Instagram', events: ['image:instagram_post'] },
+  { key: 'name', label: 'Name', element: 'name', phases: ['PROPOSING', 'AWAITING_INPUT'] },
+  { key: 'palette', label: 'Palette', element: 'palette', events: ['palette_reveal'] },
+  { key: 'logo', label: 'Logo', element: 'logo', events: ['image:logo'] },
+  { key: 'hero', label: 'Hero', element: 'hero', events: ['image:hero', 'image:hero_lifestyle'] },
+  { key: 'instagram', label: 'Instagram', element: 'instagram', events: ['image:instagram', 'image:instagram_post'] },
 ];
 
-export default function ProgressTracker({ phase, completedEvents = [] }) {
+export default function ProgressTracker({ phase, completedEvents = [], brandCanvas }) {
   const phaseIdx = ['INIT', 'ANALYZING', 'PROPOSING', 'AWAITING_INPUT', 'GENERATING', 'REFINING', 'COMPLETE']
     .indexOf(phase || 'INIT');
 
   function getStepStatus(step) {
-    // Check event-based completion
+    // Canvas-first: use element status if available
+    if (brandCanvas && step.element) {
+      const el = brandCanvas[step.element];
+      if (el) {
+        if (el.status === 'ready') return 'done';
+        if (el.status === 'generating') return 'active';
+        if (el.status === 'stale') return 'done'; // done but needs regen
+        return 'pending'; // handles 'empty' and any other status
+      }
+    }
+
+    // Check event-based completion (fallback when no canvas)
     if (step.events) {
-      const done = step.events.every(ev => completedEvents.includes(ev));
+      const done = step.events.some(ev => completedEvents.includes(ev));
       if (done) return 'done';
-      const inProgress = step.events.some(ev => {
-        // If we're in GENERATING and this is an image step, check if tool was invoked
-        return phase === 'GENERATING' || phase === 'REFINING';
-      });
+      const inProgress = phase === 'GENERATING' || phase === 'REFINING';
       if (inProgress && !done && phaseIdx >= 4) return 'active';
       return 'pending';
     }
