@@ -119,7 +119,15 @@ class ToolExecutor:
             f"Status: {result.get('status', 'unknown')}"
         )
 
-        fn_response = types.FunctionResponse(name=name, response=result)
+        # Embed canvas context in the tool response so the agent gets
+        # updated canvas state without a separate send_client_content call.
+        # send_client_content after send_tool_response is incorrect per Live API docs
+        # and causes duplicate tool invocations.
+        from services.context_injector import build_context_message
+        canvas_context = build_context_message(session, trigger="tool_result", details=f"Tool executed: {name}")
+        result["_canvas_context"] = canvas_context
+
+        fn_response = types.FunctionResponse(name=name, id=function_call.id, response=result)
         return fn_response, events
 
     # ------------------------------------------------------------------

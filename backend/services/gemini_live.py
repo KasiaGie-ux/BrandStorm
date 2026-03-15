@@ -282,6 +282,8 @@ def build_live_config() -> types.LiveConnectConfig:
         ),
         output_audio_transcription=types.AudioTranscriptionConfig(),
         input_audio_transcription=types.AudioTranscriptionConfig(),
+        proactivity=types.ProactivityConfig(proactive_audio=True),
+        enable_affective_dialog=True,
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(

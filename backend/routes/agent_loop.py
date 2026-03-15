@@ -10,11 +10,8 @@ import json
 import logging
 
 from fastapi import WebSocket
-from google.genai import types
 
-from config import SESSION_TIMEOUT_SEC
 from models.session import Session
-from services.context_injector import build_context_message
 from services.tool_executor import ToolExecutor
 
 logger = logging.getLogger("brand-agent")
@@ -147,26 +144,19 @@ async def agent_loop(
                             logger.info(f"[{session.id}] Audio playback finished, proceeding with tool response.")
                         except asyncio.TimeoutError:
                             logger.warning(f"[{session.id}] Timeout waiting for audio_playback_done. Proceeding anyway.")
+                        # Clear immediately so the next tool call's delayed_response must wait fresh.
+                        session.audio_playback_event.clear()
 
-                        # Return ALL tool results to Live API in one batch
+                        # Return ALL tool results to Live API in one batch.
+                        # Canvas context is embedded in each FunctionResponse.response
+                        # by tool_executor — no separate send_client_content needed.
+                        # Per Live API docs: send_client_content is for conversation
+                        # history only, not new messages. Using it after send_tool_response
+                        # acts as a second trigger and causes duplicate tool calls.
                         await live_session.send_tool_response(
                             function_responses=responses,
                         )
                         logger.info(f"[{session.id}] Batch tool response | Tools: {names}")
-                        
-                        # Re-introduce the Canvas State Payload:
-                        # Since we waited for `audio_playback_done`, it is safe to nudge the model 
-                        # and hand it the updated canvas state to force continuation.
-                        from services.context_injector import build_context_message
-                        context_msg = build_context_message(session, trigger="tool_result", details=f"Tools executed: {names}")
-                        await live_session.send_client_content(
-                            turns=[types.Content(
-                                role="user",
-                                parts=[types.Part.from_text(text=context_msg)],
-                            )],
-                            turn_complete=True,
-                        )
-                        logger.info(f"[{session.id}] Sent canvas context nudge after tool response.")
                     
                     # Fire and forget
                     asyncio.create_task(delayed_response(all_responses, tool_names))
