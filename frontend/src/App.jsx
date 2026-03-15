@@ -26,6 +26,10 @@ export default function App() {
   const [firstAgentText, setFirstAgentText] = useState(null);
   const [firstTurnDone, setFirstTurnDone] = useState(false);
   const launchTextRef = useRef('');
+  // True only after agent produced actual speech AND turn_complete fired.
+  // Prevents ACK turn_completes (from send_client_content) from flipping isFirstTurn
+  // before the opening speech arrives.
+  const firstSpeechTurnDoneRef = useRef(false);
   const launchIntroRef = useRef(null); // { opener, intro } — used by stripKnownIntro
   const imageFileRef = useRef(null);
   const contextTextRef = useRef('');
@@ -91,6 +95,10 @@ export default function App() {
       setTimeout(() => setScreen(SCREENS.RESULTS), 3000);
     }
   }, [audioPlayback.isPlaying]);
+
+  // Drag state lifted for UploadStage
+  const [inputLocked, setInputLocked] = useState(false);
+  const micWasActiveRef = useRef(false);
 
   // Drag state lifted for UploadStage
   const [dragOnPage, setDragOnPage] = useState(false);
@@ -227,7 +235,10 @@ export default function App() {
         break;
 
       case 'agent_text': {
-        const isFirstTurn = !messagesRef.current.some(m => m.type === 'agent_turn_complete');
+        // Use ref instead of messages scan — ACK turn_completes (from send_client_content)
+        // add agent_turn_complete to messages before first speech arrives, which would
+        // incorrectly flip isFirstTurn and send opening text to chat instead of LaunchSequence.
+        const isFirstTurn = !firstSpeechTurnDoneRef.current;
 
         // If empty text, just close any dangling partial without adding new message
         if (!event.text || !event.text.trim()) {
@@ -304,12 +315,12 @@ export default function App() {
         });
         if (event.canvas) setBrandCanvas(event.canvas);
         if (event.phase) setPhase(event.phase);
-        if (!messagesRef.current.some(m => m.type === 'agent_turn_complete')) {
+        // Only flip firstSpeechTurnDoneRef when agent actually spoke (launchTextRef has content).
+        // ACK turn_completes arrive with no speech — they must NOT end the first-turn gate.
+        if (!firstSpeechTurnDoneRef.current && launchTextRef.current) {
+          firstSpeechTurnDoneRef.current = true;
           setFirstTurnDone(true);
-          // Store first-turn text for stripKnownIntro (prevents opener leaking into chat)
-          if (launchTextRef.current) {
-            launchIntroRef.current = { opener: launchTextRef.current, intro: '' };
-          }
+          launchIntroRef.current = { opener: launchTextRef.current, intro: '' };
         }
         addMessage({ type: 'agent_turn_complete' });
         turnActiveRef.current = false;
@@ -319,6 +330,15 @@ export default function App() {
       case 'tool_invoked':
         if (event.phase) setPhase(event.phase);
         addMessage({ type: 'tool_invoked', tool: event.tool, args: event.args || {}, phase: event.phase });
+        if (event.tool === 'generate_image' || event.tool === 'generate_voiceover') {
+          // Capture whether mic was active before locking — will restore on unlock
+          // audioInput lives in StudioScreen, so we use a window event to query it
+          micWasActiveRef.current = false;
+          window.dispatchEvent(new CustomEvent('query-mic-state', {
+            detail: { callback: (isRecording) => { micWasActiveRef.current = isRecording; } }
+          }));
+          setInputLocked(true);
+        }
         break;
 
       case 'image_generated': {
@@ -342,6 +362,11 @@ export default function App() {
           }
           return [...prev, { ...newImg, _id: ++msgIdCounter.current }];
         });
+        setInputLocked(false);
+        if (micWasActiveRef.current) {
+          micWasActiveRef.current = false;
+          window.dispatchEvent(new CustomEvent('resume-mic'));
+        }
         break;
       }
 
@@ -520,6 +545,7 @@ export default function App() {
         break;
 
       case 'ping':
+        wsRef.current?.sendMessage({ type: 'pong' });
         break;
 
       case 'voiceover_handoff':
@@ -541,6 +567,11 @@ export default function App() {
         // Anna's brand story narration — the deliverable
         setBrandKit(prev => prev ? { ...prev, audio_url: event.audio_url } : { audio_url: event.audio_url });
         hasVoiceoverRef.current = true;
+        setInputLocked(false);
+        if (micWasActiveRef.current) {
+          micWasActiveRef.current = false;
+          window.dispatchEvent(new CustomEvent('resume-mic'));
+        }
         // Dedup: Gemini self-interruption can trigger the tool twice
         setMessages(prev => {
           if (prev.some(m => m.type === 'voiceover_story')) return prev;
@@ -593,6 +624,7 @@ export default function App() {
     setBrandCanvas(null);
     setFirstAgentText(null);
     setFirstTurnDone(false);
+    firstSpeechTurnDoneRef.current = false;
     launchTextRef.current = '';
     launchIntroRef.current = null;
     window._voiceoverHandoffDone = false;
@@ -629,7 +661,7 @@ export default function App() {
     
     const sysMsg = { 
       type: 'text_input', 
-      text: 'SYSTEM: User has entered the Studio. You may now perform your visual analysis and propose names.' 
+      text: 'SYSTEM: User has entered the Studio.'
     };
 
     if (wsRef.current?.isConnected) {
@@ -678,6 +710,7 @@ export default function App() {
     setImagePreview(null);
     setFirstAgentText(null);
     setFirstTurnDone(false);
+    firstSpeechTurnDoneRef.current = false;
     launchTextRef.current = '';
     launchIntroRef.current = null;
   }, [ws]);
@@ -785,6 +818,7 @@ export default function App() {
               onVoiceoverEnd={handleVoiceoverEnd}
               audioPlayback={audioPlayback}
               brandCanvas={brandCanvas}
+              inputLocked={inputLocked}
             />
           </motion.div>
         )}

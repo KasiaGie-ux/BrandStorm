@@ -1,3 +1,4 @@
+# UNUSED — superseded by routes/agent_loop.py + routes/receive_loop.py
 """State-machine driven auto-continue dispatcher."""
 
 import asyncio
@@ -209,7 +210,7 @@ async def _dispatch_next_step(
             logger.info(f"[{session.id}] Action: dispatch_fonts_speech | Turn: {turn_count}")
             _schedule_nudge(
                 session, live_session, nudge, "fonts_speech",
-                pause_seconds=6,
+                pause_seconds=10,
             )
         else:
             # fonts already exist — skip to next missing thing
@@ -248,7 +249,7 @@ async def _dispatch_next_step(
                 f"reference the brand's palette or mood. Be specific. "
                 f"Do NOT call any tools. Just speak, then STOP."
             )
-            _pause = 3 if phase == AgentPhase.FONTS_TOOL else 5
+            _pause = 8
             logger.info(
                 f"[{session.id}] Action: dispatch_image_speech | "
                 f"Asset: {next_asset} | Turn: {turn_count}"

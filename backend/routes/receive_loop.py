@@ -1,8 +1,9 @@
 """Receive loop — forwards frontend messages to Gemini Live API.
 
 Simple: receive from WebSocket → inject canvas context → send to Live API.
-No name detection, no signal analysis, no feedback gates.
-The agent handles all interpretation through its own reasoning.
+Positive affirmations ("yes", "ok", "tak") are enriched with a [NEXT STEP]
+instruction derived from the current canvas state, so the agent knows exactly
+which tool to call without having to guess.
 """
 
 import base64
@@ -12,11 +13,91 @@ import logging
 from fastapi import WebSocket, WebSocketDisconnect
 from google.genai import types
 
+from models.canvas import ElementStatus
 from models.session import Session
 from services.context_injector import build_context_message
 from services.gemini_live import image_bytes_to_part
 
 logger = logging.getLogger("brand-agent")
+
+_AFFIRMATIONS = {"yes", "ok", "tak", "go", "dalej", "sure", "yep", "yeah", "proceed"}
+
+
+def _resolve_next_step(session: Session) -> str | None:
+    """Return an explicit [NEXT STEP] instruction based on canvas state.
+
+    Returns None when no automatic next step can be determined (e.g. user
+    is giving freeform feedback, not approving a pipeline step).
+    """
+    c = session.canvas
+    ready = ElementStatus.READY
+    empty = ElementStatus.EMPTY
+
+    # Step 3: names not yet proposed → propose_names
+    # Guard: if names were already proposed, wait for user to choose — don't re-propose.
+    if c.name.status == empty and not session.names_proposed:
+        return (
+            "User approved. Call propose_names with 3 creative brand names now. "
+            "ONE short sentence first. STOP after the tool call."
+        )
+
+    # Step 6: name chosen but identity not set → set_brand_identity
+    if c.name.status == ready and c.tagline.status == empty:
+        return (
+            "User approved. Call set_brand_identity with name, tagline, story, values, "
+            "tone_do, and tone_dont now. ONE short sentence first. STOP after the tool call."
+        )
+
+    # Step 8: identity ready but palette missing → set_palette
+    if c.tagline.status == ready and c.palette.status == empty:
+        return (
+            "User approved. Call set_palette with 5 colors (hex, role, name) now. "
+            "ONE short sentence about the palette mood first. STOP after the tool call."
+        )
+
+    # Step 10: palette ready but fonts missing → set_fonts
+    if c.palette.status == ready and c.fonts.status == empty:
+        return (
+            "User approved. Call set_fonts with heading_font and body_font now. "
+            "ONE short sentence about typography feel first. STOP after the tool call."
+        )
+
+    # Step 12: fonts ready but logo missing → generate_image logo
+    if c.fonts.status == ready and c.logo.status == empty:
+        return (
+            "MANDATORY: You MUST call generate_image(element='logo') RIGHT NOW. "
+            "Say max 6 words first. Then call the tool. No exceptions."
+        )
+
+    # Step 14: logo ready but hero missing → generate_image hero
+    if c.logo.status == ready and c.hero.status == empty:
+        return (
+            "MANDATORY: You MUST call generate_image(element='hero') RIGHT NOW. "
+            "Say max 6 words first. Then call the tool. No exceptions."
+        )
+
+    # Step 16: hero ready but instagram missing → generate_image instagram
+    if c.hero.status == ready and c.instagram.status == empty:
+        return (
+            "MANDATORY: You MUST call generate_image(element='instagram') RIGHT NOW. "
+            "Say max 6 words first. Then call the tool. No exceptions."
+        )
+
+    # Step 18: instagram ready but voiceover missing → generate_voiceover
+    if c.instagram.status == ready and c.voiceover.status == empty:
+        return (
+            "MANDATORY: You MUST call generate_voiceover() RIGHT NOW. "
+            "Say max 6 words first. Then call the tool. No exceptions."
+        )
+
+    # Step 20: voiceover ready → finalize_brand_kit
+    if c.voiceover.status == ready:
+        return (
+            "MANDATORY: You MUST call finalize_brand_kit() RIGHT NOW. "
+            "Say max 6 words first. Then call the tool. No exceptions."
+        )
+
+    return None
 
 
 async def receive_loop(
@@ -41,11 +122,64 @@ async def receive_loop(
                     continue
                 session.add_transcript("user", text)
 
-                # Inject canvas context with the user's message
+                lower = text.lower().strip()
+                if lower.startswith("i choose "):
+                    chosen = text[len("i choose "):].strip()
+                    details = (
+                        f"User chose the brand name: '{chosen}'.\n"
+                        f"Say ONE confident sentence about why this name fits — reference the product visuals.\n"
+                        f"Then ask: 'Should I build out the full brand identity?' STOP. Do NOT call any tools yet."
+                    )
+                    trigger = "name_selected"
+                elif "user has entered the studio" in lower:
+                    details = (
+                        "User has entered the Studio. Execute Step 2 of your flow:\n"
+                        "Analyze the product in 2 sentences (reference what you SEE).\n"
+                        "State your creative direction in 1 sentence.\n"
+                        "Ask: 'Ready to explore some name options?' STOP. WAIT. Do NOT call any tools."
+                    )
+                    trigger = "studio_entry"
+                elif lower in _AFFIRMATIONS:
+                    next_step = _resolve_next_step(session)
+                    if next_step:
+                        # Build a fingerprint of current canvas step state
+                        c = session.canvas
+                        canvas_key = "|".join([
+                            c.name.status, c.tagline.status, c.palette.status,
+                            c.fonts.status, c.logo.status, c.hero.status,
+                            c.instagram.status, c.voiceover.status,
+                        ])
+                        # Deduplicate: skip if same step was already sent AND canvas
+                        # hasn't advanced. User is confirming something else (e.g. tagline
+                        # change, tone change) — let agent handle it without next-step override.
+                        if (next_step == session.pending_next_step
+                                and canvas_key == session.pending_next_step_canvas_key):
+                            logger.info(
+                                f"[{session.id}] Affirmation skipped — same canvas state, "
+                                f"next step already pending. Agent is mid-conversation."
+                            )
+                            details = text
+                            trigger = "user_message"
+                        else:
+                            session.pending_next_step = next_step
+                            session.pending_next_step_canvas_key = canvas_key
+                            details = f"User said: '{text}'\n[NEXT STEP] {next_step}"
+                            trigger = "user_approved"
+                            logger.info(
+                                f"[{session.id}] Affirmation detected | "
+                                f"Canvas next step resolved | Trigger: user_approved"
+                            )
+                    else:
+                        details = text
+                        trigger = "user_message"
+                else:
+                    details = text
+                    trigger = "user_message"
+
                 context = build_context_message(
                     session,
-                    trigger="user_message",
-                    details=text,
+                    trigger=trigger,
+                    details=details,
                 )
                 await live_session.send_client_content(
                     turns=[types.Content(
@@ -60,10 +194,7 @@ async def receive_loop(
                 if audio_data:
                     audio_bytes = base64.b64decode(audio_data)
                     await live_session.send_realtime_input(
-                        audio=types.Blob(
-                            data=audio_bytes,
-                            mime_type="audio/pcm;rate=16000",
-                        ),
+                        audio=types.Blob(data=audio_bytes, mime_type="audio/pcm;rate=16000"),
                     )
 
             elif msg_type == "image_upload":

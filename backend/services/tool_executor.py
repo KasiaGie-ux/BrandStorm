@@ -118,6 +118,17 @@ class ToolExecutor:
             f"Status: {result.get('status', 'unknown')}"
         )
 
+        # Inject feedback instruction into every tool response.
+        # Agent sees this as part of the tool result — enforces ask-then-continue.
+        # propose_names is excluded: agent must narrate names first, then wait.
+        # finalize_brand_kit is excluded: no next step to ask about.
+        _no_feedback_tools = {"propose_names", "finalize_brand_kit"}
+        if name not in _no_feedback_tools and result.get("status") != "error":
+            result["_instruction"] = (
+                "Follow the exact script for this step. "
+                "ONE sentence. ONE question. STOP."
+            )
+
         fn_response = types.FunctionResponse(name=name, response=result)
         return fn_response, events
 
@@ -138,6 +149,8 @@ class ToolExecutor:
             canvas.name.set(args["name"], {"source": "agent"})
             fields_updated.append("name")
             events.append({"type": "brand_name_reveal", "name": args["name"]})
+            # User chose a name — reset flag so re-proposal works if needed
+            session.names_proposed = False
             # Name changed — mark dependent elements stale
             if old_name and old_name != args["name"]:
                 canvas.logo.mark_stale()
@@ -268,6 +281,7 @@ class ToolExecutor:
             "names": validated,
             "auto_select_seconds": 8,
         }
+        session.names_proposed = True
         logger.info(f"[{session.id}] propose_names | Names: {[n['name'] for n in validated]}")
         return {"status": "success", "names": [n["name"] for n in validated]}, [
             event,
@@ -359,10 +373,14 @@ class ToolExecutor:
                     {"type": "canvas_update", "canvas": session.canvas.snapshot()},
                 ]
 
-            # Store logo for chaining
+            # Store logo for chaining — and mark hero/instagram stale since they use logo as ref
             if element_name == "logo":
                 session.logo_image_bytes = image_bytes
                 session.logo_image_mime = mime_type
+                if session.canvas.hero.status == ElementStatus.READY:
+                    session.canvas.hero.mark_stale()
+                if session.canvas.instagram.status == ElementStatus.READY:
+                    session.canvas.instagram.mark_stale()
 
             url = await self._storage.upload_image(
                 session_id=session.id,

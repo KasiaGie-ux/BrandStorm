@@ -1,3 +1,4 @@
+# UNUSED — superseded by routes/agent_loop.py + routes/receive_loop.py
 """Shared WebSocket helpers used by ws_receive, ws_dispatch, ws_agent."""
 
 import asyncio
@@ -140,17 +141,21 @@ async def _wait_and_nudge(
     Guards against stale nudges: if the user interrupted (barge-in) or
     the session is awaiting feedback we silently drop the nudge.
     """
-    # Don't clear before waiting — if audio_playback_done already arrived
-    # (event set between tool completion and nudge creation), proceed immediately.
-    # Clear AFTER consuming so the next nudge cycle starts clean.
-    if not session.frontend_ready.is_set():
-        try:
-            await asyncio.wait_for(session.frontend_ready.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
-            logger.warning(
-                f"[{session.id}] {label}: frontend_ready timeout ({timeout}s), proceeding"
-            )
+    # Always clear BEFORE waiting — forces a fresh signal from frontend.
+    # Consuming a stale set() from a previous cycle caused nudges to fire
+    # immediately while agent audio was still playing.
     session.frontend_ready.clear()
+    try:
+        await asyncio.wait_for(session.frontend_ready.wait(), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning(
+            f"[{session.id}] {label}: frontend_ready timeout ({timeout}s), proceeding"
+        )
+    session.frontend_ready.clear()
+
+    # Extra guard — wait for agent audio to fully stop before nudging.
+    # frontend_ready signals UI readiness but audio may still be draining.
+    await asyncio.sleep(0.5)
 
     # Feedback pause — give user time to speak before next step
     if pause_seconds > 0:

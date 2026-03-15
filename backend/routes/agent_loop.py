@@ -6,7 +6,6 @@ The agent is autonomous — this loop just bridges Live API and WebSocket.
 
 import asyncio
 import base64
-import json
 import logging
 
 from fastapi import WebSocket
@@ -14,12 +13,10 @@ from google.genai import types
 
 from config import SESSION_TIMEOUT_SEC
 from models.session import Session
-from services.context_injector import build_context_message
 from services.tool_executor import ToolExecutor
 
 logger = logging.getLogger("brand-agent")
 
-# No _SILENCE_FALLBACK_SEC needed anymore
 
 
 async def send_json(ws: WebSocket, data: dict) -> None:
@@ -28,6 +25,7 @@ async def send_json(ws: WebSocket, data: dict) -> None:
         await ws.send_json(data)
     except Exception:
         pass
+
 
 
 async def agent_loop(
@@ -84,8 +82,14 @@ async def agent_loop(
                                 "text": text,
                                 "partial": not getattr(sc, "turn_complete", False),
                             })
+                            # Clear watchdog flag — agent is speaking
+                            if text.strip() and session.pending_tool_response is not None:
+                                logger.info(
+                                    f"[{session.id}] Watchdog cleared — agent spoke: '{text[:40]}'"
+                                )
+                                session.pending_tool_response = None
 
-                    # Turn complete
+                    # Turn complete — always send agent_turn_complete
                     if getattr(sc, "turn_complete", False):
                         await send_json(ws, {
                             "type": "agent_turn_complete",
@@ -99,48 +103,70 @@ async def agent_loop(
                     tool_names = []
 
                     for fc in message.tool_call.function_calls:
-                        # Notify frontend of tool invocation
                         await send_json(ws, {
                             "type": "tool_invoked",
                             "tool": fc.name,
                             "args": dict(fc.args) if fc.args else {},
                         })
 
-                        # Execute tool (updates canvas internally)
-                        fn_response, frontend_events = await tool_executor.execute(
-                            session, fc,
-                        )
+                        # For long-running tools (image generation), send silent PCM
+                        # chunks every 8s to keep the Live API session alive.
+                        # 480 bytes of silence = 15ms at 16kHz 16-bit mono — below VAD threshold.
+                        _LONG_RUNNING = {"generate_image", "generate_voiceover"}
+                        if fc.name in _LONG_RUNNING:
+                            _SILENCE = b"\x00" * 480
+                            execute_task = asyncio.create_task(
+                                tool_executor.execute(session, fc)
+                            )
+                            while not execute_task.done():
+                                try:
+                                    await asyncio.wait_for(
+                                        asyncio.shield(execute_task), timeout=8.0
+                                    )
+                                except asyncio.TimeoutError:
+                                    try:
+                                        await live_session.send_realtime_input(
+                                            audio=types.Blob(
+                                                data=_SILENCE,
+                                                mime_type="audio/pcm;rate=16000",
+                                            )
+                                        )
+                                        logger.debug(
+                                            f"[{session.id}] Live API keepalive | Tool: {fc.name}"
+                                        )
+                                    except Exception as ke:
+                                        logger.warning(
+                                            f"[{session.id}] Keepalive failed: {ke}"
+                                        )
+                            fn_response, frontend_events = execute_task.result()
+                        else:
+                            fn_response, frontend_events = await tool_executor.execute(
+                                session, fc,
+                            )
+
                         all_responses.append(fn_response)
                         all_events.extend(frontend_events)
                         tool_names.append(fc.name)
 
-                    # Send all frontend events
                     for event in all_events:
                         await send_json(ws, event)
 
-                    # Return ALL tool results to Live API in one batch
-                    await live_session.send_tool_response(
-                        function_responses=all_responses,
-                    )
+                    try:
+                        await live_session.send_tool_response(
+                            function_responses=all_responses,
+                        )
+                    except Exception as tre:
+                        logger.error(f"[{session.id}] send_tool_response failed: {tre}")
+                        raise
                     logger.info(f"[{session.id}] Batch tool response | Tools: {tool_names}")
 
-                    # Inject updated canvas context so the agent knows the
-                    # current state and continues the conversation.  Without
-                    # this the Live API closes the stream immediately after
-                    # the tool response.
-                    tools_summary = ", ".join(tool_names)
-                    context = build_context_message(
-                        session,
-                        trigger="tool_results",
-                        details=f"Tools completed: {tools_summary}. Continue the conversation.",
-                    )
-                    await live_session.send_client_content(
-                        turns=[types.Content(
-                            role="user",
-                            parts=[types.Part.from_text(text=context)],
-                        )],
-                        turn_complete=True,
-                    )
+                    # Mark pending — tool_watchdog (in ws.py) will nudge if agent stays silent
+                    session.pending_tool_response = tool_names[:]
+                    # Clear next-step dedup guard — tool fired, canvas state will change
+                    session.pending_next_step = None
+                    session.pending_next_step_canvas_key = None
+                    logger.info(f"[{session.id}] Watchdog armed | Tools: {tool_names}")
+
 
         # If we reach here the Live API stream ended (server closed it)
         logger.warning(f"[{session.id}] Live API stream ended (receive generator exhausted)")

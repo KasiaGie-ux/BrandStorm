@@ -1,3 +1,4 @@
+# UNUSED — superseded by routes/agent_loop.py + routes/receive_loop.py
 """WebSocket receive loop — frontend → Live API."""
 
 import asyncio

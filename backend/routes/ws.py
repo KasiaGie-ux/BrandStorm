@@ -57,6 +57,70 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
                 except Exception:
                     pass
 
+            async def tool_watchdog():
+                """Independent task — polls every second, nudges agent if silent after tool."""
+                from google.genai import types as _t
+                from models.canvas import ElementStatus
+                from services.context_injector import build_context_message as _build_ctx
+
+                _NUDGE_PER_TOOL = {
+                    "set_brand_identity": "set_brand_identity was called. If name/tagline/story/values/tone are all set, say ONE sentence reacting and ask: 'Want to build the color palette?' STOP. WAIT. If any field is missing, call set_brand_identity again with ALL fields filled.",
+                    "set_palette":        "ONE sentence reacting. Ask: 'Ready to pick typography?' STOP. WAIT.",
+                    "set_fonts":          "ONE sentence reacting to the fonts. Ask: 'Shall we design the logo?' STOP. WAIT.",
+                    "generate_image":     "ONE sentence reacting to the image. Ask for feedback. STOP. WAIT.",
+                    "propose_names":      "Narrate each name: ONE sentence per name. End third with 'That's my pick.' STOP. WAIT.",
+                }
+                # generate_voiceover: Anna's narration plays after — agent must NOT speak
+                # until voiceover_playback_done arrives from frontend. Watchdog skips it.
+                _DEFAULT_NUDGE = "ONE sentence reacting. Ask user for feedback. STOP. WAIT."
+
+                try:
+                    while True:
+                        await asyncio.sleep(1)
+                        if session.pending_tool_response is None:
+                            continue
+                        tools = session.pending_tool_response
+                        timeout = 5.0
+                        elapsed = 0.0
+                        while elapsed < timeout:
+                            await asyncio.sleep(1)
+                            elapsed += 1.0
+                            if session.pending_tool_response is None:
+                                break
+                        if session.pending_tool_response is None:
+                            continue
+                        tool_name = tools[0] if tools else ""
+                        # generate_voiceover: Anna plays after — watchdog must NOT nudge.
+                        # Agent will speak after voiceover_playback_done arrives from frontend.
+                        if tool_name == "generate_voiceover":
+                            session.pending_tool_response = None
+                            logger.info(f"[{session_id}] Watchdog skipped for generate_voiceover")
+                            continue
+                        nudge_instruction = _NUDGE_PER_TOOL.get(tool_name, _DEFAULT_NUDGE)
+                        nudge_text = _build_ctx(
+                            session,
+                            trigger="tool_result",
+                            details=f"Tool '{tool_name}' result delivered. {nudge_instruction}",
+                        )
+                        logger.info(
+                            f"[{session_id}] Tool watchdog fired | Tool: {tool_name} | Elapsed: {timeout}s"
+                        )
+                        session.pending_tool_response = None
+                        try:
+                            await live_session.send_client_content(
+                                turns=[_t.Content(
+                                    role="user",
+                                    parts=[_t.Part.from_text(text=nudge_text)],
+                                )],
+                                turn_complete=True,
+                            )
+                        except Exception as ne:
+                            logger.warning(f"[{session_id}] Watchdog nudge failed: {ne}")
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.error(f"[{session_id}] Tool watchdog error: {e}")
+
             receive_task = asyncio.create_task(
                 receive_loop(ws, live_session, session),
                 name="receive",
@@ -68,6 +132,10 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
             keepalive_task = asyncio.create_task(
                 keepalive_loop(),
                 name="keepalive",
+            )
+            watchdog_task = asyncio.create_task(
+                tool_watchdog(),
+                name="tool_watchdog",
             )
 
             async def _stop_watcher():
@@ -81,6 +149,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
                 return_when=asyncio.FIRST_COMPLETED,
             )
             keepalive_task.cancel()
+            watchdog_task.cancel()
             for task in done:
                 try:
                     exc = task.exception()

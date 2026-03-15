@@ -40,6 +40,25 @@ class Session:
     # Background async tasks (image gen, TTS) — keyed by task name
     background_tasks: dict[str, Any] = field(default_factory=dict)
 
+    # Set to tool names after send_tool_response, cleared when agent speaks.
+    # Used by the post-tool nudge to detect agent getting stuck after a tool.
+    pending_tool_response: list[str] | None = None
+
+    # True once propose_names has been called — prevents re-proposing on affirmations
+    # while user is still deciding between the presented names.
+    names_proposed: bool = False
+
+    # Tracks the last [NEXT STEP] instruction sent to the agent.
+    # Prevents duplicate instructions when user sends multiple affirmations rapidly
+    # before the agent has had a chance to act on the first one.
+    pending_next_step: str | None = None
+
+    # Canvas fingerprint when pending_next_step was last set.
+    # If canvas hasn't changed and pending_next_step is set, the user's next
+    # affirmation is likely confirming something else (e.g. a tagline change) —
+    # don't re-inject [NEXT STEP].
+    pending_next_step_canvas_key: str | None = None
+
     def add_transcript(self, role: str, text: str) -> None:
         self.transcript.append({"role": role, "text": text, "ts": time.time()})
         self.updated_at = time.time()

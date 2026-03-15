@@ -21,9 +21,10 @@ import { useRef, useCallback, useEffect } from 'react';
 const VISUAL_TYPES = new Set([
   'brand_name_reveal', 'tagline_reveal',
   'brand_story', 'brand_values', 'palette_reveal',
-  'font_suggestion', 'tool_invoked', 'image_generated',
+  'font_suggestion', 'image_generated',
   'voiceover_handoff', 'voiceover_greeting', 'voiceover_story',
   'tone_of_voice',
+  // tool_invoked intentionally excluded — spinner must appear immediately
 ]);
 
 const STAGGER_MS = 600;

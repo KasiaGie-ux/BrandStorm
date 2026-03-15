@@ -16,7 +16,7 @@ const DISPLAY_TYPES = [
   'voiceover_greeting', 'voiceover_story',
 ];
 
-export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, imagePreview, onVoiceoverEnd, audioPlayback, brandCanvas }) {
+export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, imagePreview, onVoiceoverEnd, audioPlayback, brandCanvas, inputLocked }) {
   const scrollRef = useRef(null);
   const [input, setInput] = useState('');
   const [showOverlay, setShowOverlay] = useState(false);
@@ -38,6 +38,29 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
   const audioInput = useAudioInput({
     onChunk: handleAudioChunk,
   });
+
+  // Respond to App-level lock/unlock events so App can query and restore mic state
+  useEffect(() => {
+    const onQueryMic = (e) => {
+      if (e.detail?.callback) e.detail.callback(audioInput.isRecording);
+    };
+    const onResumeMic = () => {
+      if (!audioInput.isRecording) audioInput.start();
+    };
+    window.addEventListener('query-mic-state', onQueryMic);
+    window.addEventListener('resume-mic', onResumeMic);
+    return () => {
+      window.removeEventListener('query-mic-state', onQueryMic);
+      window.removeEventListener('resume-mic', onResumeMic);
+    };
+  }, [audioInput]);
+
+  // Stop mic immediately when input becomes locked
+  useEffect(() => {
+    if (inputLocked && audioInput.isRecording) {
+      audioInput.stop();
+    }
+  }, [inputLocked, audioInput]);
 
   const handleMicToggle = useCallback(() => {
     // Ensure AudioContext is initialized (requires user gesture)
@@ -350,6 +373,26 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
         background: `linear-gradient(to top, ${raw.cream} 60%, transparent)`,
       }}>
         <AnimatePresence>
+          {inputLocked && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              style={{ maxWidth: 640, margin: '0 auto', paddingBottom: 6 }}
+            >
+              <div style={{
+                fontSize: 11,
+                color: raw.muted,
+                fontFamily: fonts.body,
+                fontStyle: 'italic',
+                letterSpacing: '0.04em',
+              }}>
+                Generating — input locked
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
           {(isGenerating || isStopped) && (
             <motion.div
               initial={{ opacity: 0, height: 0 }}
@@ -384,16 +427,16 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
             type="button"
             aria-label={audioInput.isRecording ? 'Stop recording' : 'Start recording'}
             onClick={handleMicToggle}
-            title={audioInput.permissionDenied ? 'Microphone unavailable — type instead' : ''}
-            disabled={audioInput.permissionDenied}
+            title={inputLocked ? 'Input locked during generation' : audioInput.permissionDenied ? 'Microphone unavailable — type instead' : ''}
+            disabled={audioInput.permissionDenied || inputLocked}
             style={{
               width: 34, height: 34,
               border: audioInput.isRecording ? `2px solid ${raw.red}` : `2px solid ${raw.line}`,
-              cursor: audioInput.permissionDenied ? 'not-allowed' : 'pointer',
+              cursor: (audioInput.permissionDenied || inputLocked) ? 'not-allowed' : 'pointer',
               background: audioInput.isRecording ? raw.red : 'transparent',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               transition: 'all 0.2s', flexShrink: 0,
-              opacity: audioInput.permissionDenied ? 0.4 : 1,
+              opacity: (audioInput.permissionDenied || inputLocked) ? 0.4 : 1,
               position: 'relative',
             }}
           >
@@ -427,11 +470,14 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-            placeholder={audioInput.isRecording ? 'Or type here...' : 'Tell the agent what you think...'}
+            onKeyDown={(e) => e.key === 'Enter' && !inputLocked && handleSend()}
+            placeholder={inputLocked ? 'Generating... input locked' : audioInput.isRecording ? 'Or type here...' : 'Tell the agent what you think...'}
+            disabled={inputLocked}
             style={{
               flex: 1, border: 'none', background: 'transparent',
-              fontSize: 14, color: raw.ink, fontFamily: fonts.body,
+              fontSize: 14, color: inputLocked ? raw.muted : raw.ink,
+              fontFamily: fonts.body,
+              cursor: inputLocked ? 'not-allowed' : 'text',
             }}
           />
           {onStop && phase !== 'INIT' && phase !== 'COMPLETE' && phase !== 'STOPPED' && (
@@ -460,17 +506,17 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
             type="button"
             aria-label="Send message"
             onClick={handleSend}
-            disabled={!input.trim()}
+            disabled={!input.trim() || inputLocked}
             style={{
               width: 34, height: 34, border: 'none',
-              cursor: input.trim() ? 'pointer' : 'default',
-              background: input.trim() ? raw.red : raw.line,
+              cursor: (input.trim() && !inputLocked) ? 'pointer' : 'default',
+              background: (input.trim() && !inputLocked) ? raw.red : raw.line,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               transition: 'background 0.2s', flexShrink: 0,
             }}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-              stroke={input.trim() ? raw.white : raw.faint}
+              stroke={(input.trim() && !inputLocked) ? raw.white : raw.faint}
               strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
               style={{ transition: 'stroke 0.2s' }}
             >

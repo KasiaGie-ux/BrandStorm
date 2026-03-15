@@ -49,4 +49,11 @@ if __name__ == "__main__":
     import uvicorn
     import sys
     use_reload = "--no-reload" not in sys.argv
-    uvicorn.run("main:app", host=HOST, port=PORT, reload=use_reload)
+    uvicorn.run(
+        "main:app",
+        host=HOST,
+        port=PORT,
+        reload=use_reload,
+        ws_ping_interval=30,   # send WebSocket ping every 30s (default 20)
+        ws_ping_timeout=120,   # wait up to 120s for pong (default 20) — image gen can take 60s+
+    )
