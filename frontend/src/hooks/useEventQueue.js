@@ -21,10 +21,12 @@ import { useRef, useCallback, useEffect } from 'react';
 const VISUAL_TYPES = new Set([
   'brand_name_reveal', 'tagline_reveal',
   'brand_story', 'brand_values', 'palette_reveal',
-  'font_suggestion', 'image_generated',
+  'font_suggestion',
   'voiceover_handoff', 'voiceover_greeting', 'voiceover_story',
   'tone_of_voice',
   // tool_invoked intentionally excluded — spinner must appear immediately
+  // image_generated intentionally excluded — image must appear immediately when ready,
+  // not wait for agent audio to finish (breaks regeneration when session drops mid-queue)
 ]);
 
 const STAGGER_MS = 600;

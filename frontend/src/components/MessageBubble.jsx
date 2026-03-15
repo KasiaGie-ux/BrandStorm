@@ -11,7 +11,36 @@ import { raw, fonts, easeCurve } from '../styles/tokens';
 
 export { ImageTile, ProductOverlay, ImageOverlay } from './StudioHelpers';
 
-export default function MessageBubble({ msg, sendMessage, brandName, tagline, onVoiceoverEnd, nameNarrationDone, proposalsFrozen, onStopAudio }) {
+export default function MessageBubble({ msg, sendMessage, brandName, tagline, onVoiceoverEnd, nameNarrationDone, proposalsFrozen, onStopAudio, onReset }) {
+  if (msg.type === 'session_error') {
+    return (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '12px 0' }}
+      >
+        <span style={{ fontSize: 13, color: raw.muted, fontFamily: fonts.body, fontStyle: 'italic' }}>
+          {msg.text}
+        </span>
+        {onReset && (
+          <button
+            onClick={onReset}
+            style={{
+              flexShrink: 0,
+              background: 'transparent', color: raw.red,
+              border: `1.5px solid ${raw.red}`, padding: '5px 16px',
+              fontSize: 11, fontWeight: 700, letterSpacing: '0.15em',
+              textTransform: 'uppercase', cursor: 'pointer',
+              fontFamily: fonts.body,
+            }}
+          >
+            Start Again
+          </button>
+        )}
+      </motion.div>
+    );
+  }
+
   if (msg.type === 'agent_thinking') {
     return (
       <motion.div

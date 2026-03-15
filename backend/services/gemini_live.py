@@ -305,11 +305,12 @@ def build_live_config() -> types.LiveConnectConfig:
         realtime_input_config=types.RealtimeInputConfig(
             automatic_activity_detection=types.AutomaticActivityDetection(
                 disabled=False,
-                start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
+                start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
                 end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
-                prefix_padding_ms=100,
-                silence_duration_ms=1500,
-            )
+                prefix_padding_ms=20,
+                silence_duration_ms=400,
+            ),
+            turn_coverage=types.TurnCoverage.TURN_INCLUDES_ALL_INPUT,
         ),
     )
     return config

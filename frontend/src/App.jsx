@@ -337,42 +337,48 @@ export default function App() {
         addMessage({ type: 'agent_turn_complete' });
         turnActiveRef.current = false;
         eventQueue.onTurnComplete();
+        // Restore mic after agent finishes presenting (identity/palette/fonts reveal)
+        window.dispatchEvent(new CustomEvent('agent-presenting-done'));
+        if (micWasActiveRef.current && !inputLocked) {
+          micWasActiveRef.current = false;
+          window.dispatchEvent(new CustomEvent('resume-mic'));
+        }
         break;
 
       case 'tool_invoked':
         if (event.phase) setPhase(event.phase);
         addMessage({ type: 'tool_invoked', tool: event.tool, args: event.args || {}, phase: event.phase });
-        if (event.tool === 'generate_image' || event.tool === 'generate_voiceover') {
-          // Capture whether mic was active before locking — will restore on unlock
-          // audioInput lives in StudioScreen, so we use a window event to query it
-          micWasActiveRef.current = false;
-          window.dispatchEvent(new CustomEvent('query-mic-state', {
-            detail: { callback: (isRecording) => { micWasActiveRef.current = isRecording; } }
-          }));
-          setInputLocked(true);
+        {
+          const MIC_OFF_TOOLS = new Set(['generate_image', 'generate_voiceover', 'set_brand_identity', 'set_palette', 'set_fonts']);
+          if (MIC_OFF_TOOLS.has(event.tool)) {
+            micWasActiveRef.current = false;
+            window.dispatchEvent(new CustomEvent('query-mic-state', {
+              detail: { callback: (isRecording) => { micWasActiveRef.current = isRecording; } }
+            }));
+            window.dispatchEvent(new CustomEvent('stop-mic'));
+          }
+          if (event.tool === 'generate_image' || event.tool === 'generate_voiceover') {
+            setInputLocked(true);
+          }
         }
         break;
 
       case 'image_generated': {
+        // Cache-bust the URL so browser loads the new image even if filename is same
+        const bustedUrl = event.url ? `${event.url}?v=${Date.now()}` : event.url;
         const newImg = {
           type: 'image_generated',
-          url: event.url,
+          url: bustedUrl,
           asset_type: event.asset_type,
-          label: event.asset_type?.replace('_', ' '),
+          label: event.label || event.asset_type?.replace(/_/g, ' '),
           description: event.description,
           progress: event.progress,
         };
+        // Always append as a new message — regenerated images appear as new tiles in chat
         setMessages(prev => {
-          const idx = prev.findLastIndex(
-            m => m.type === 'image_generated' && m.asset_type === event.asset_type
-          );
-          if (idx !== -1) {
-            const next = [...prev];
-            next[idx] = { ...prev[idx], ...newImg };
-            messagesRef.current = next;
-            return next;
-          }
-          return [...prev, { ...newImg, _id: ++msgIdCounter.current }];
+          const next = [...prev, { ...newImg, _id: ++msgIdCounter.current }];
+          messagesRef.current = next;
+          return next;
         });
         // setInputLocked(false) handled above in early-unlock block (before event queue)
         break;
@@ -600,11 +606,11 @@ export default function App() {
         break;
 
       case 'session_timeout':
-        addMessage({ type: 'agent_text', text: `Session timed out: ${event.message}` });
+        addMessage({ type: 'session_error', text: 'Your session has ended — it timed out.' });
         break;
 
       case 'error':
-        addMessage({ type: 'agent_text', text: `Error: ${event.message}` });
+        addMessage({ type: 'session_error', text: event.message || 'Something went wrong. Your session has ended.' });
         break;
 
       default:
@@ -621,6 +627,13 @@ export default function App() {
   });
   // Keep wsRef in sync
   wsRef.current = ws;
+
+  // Show error message in chat when connection permanently fails
+  useEffect(() => {
+    if (wsStatus === 'failed' && (screen === SCREENS.STUDIO || screen === SCREENS.LAUNCH)) {
+      addMessage({ type: 'session_error', text: 'Your session has ended — the connection was lost.' });
+    }
+  }, [wsStatus, screen, addMessage]);
 
   const handleGenerate = useCallback((imageFile, contextText) => {
     const sid = `session-${Date.now().toString(36)}`;
@@ -753,9 +766,9 @@ export default function App() {
       fontFamily: "'Syne', sans-serif",
       minHeight: '100vh', background: raw.cream,
     }}>
-      {/* Connection toast */}
+      {/* Reconnecting toast */}
       <AnimatePresence>
-        {(wsStatus === 'reconnecting' || wsStatus === 'failed') && (
+        {wsStatus === 'reconnecting' && (
           <motion.div
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -767,14 +780,15 @@ export default function App() {
               fontFamily: "'Syne', sans-serif",
               textTransform: 'uppercase', letterSpacing: '0.1em',
               background: raw.cream,
-              border: `2px solid ${wsStatus === 'failed' ? raw.red : raw.ink}`,
-              color: wsStatus === 'failed' ? raw.red : raw.ink,
+              border: `2px solid ${raw.ink}`,
+              color: raw.ink,
             }}
           >
-            {wsStatus === 'reconnecting' ? 'Reconnecting...' : 'Connection failed. Please refresh.'}
+            Reconnecting...
           </motion.div>
         )}
       </AnimatePresence>
+
 
       {/* LaunchSequence overlay */}
       <AnimatePresence>
@@ -822,6 +836,7 @@ export default function App() {
               sendMessage={handleSendMessage}
               onBack={handleBack}
               onStop={handleStop}
+              onReset={handleReset}
               imagePreview={imagePreview}
               onVoiceoverEnd={handleVoiceoverEnd}
               audioPlayback={audioPlayback}

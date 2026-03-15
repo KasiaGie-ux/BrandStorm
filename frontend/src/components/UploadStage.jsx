@@ -8,18 +8,29 @@ import Reveal from './Reveal';
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const ACCEPTED_TYPES = ['image/jpeg', 'image/png'];
 
-// Magic bytes for each allowed type — defends against renamed executables
-const MAGIC_BYTES = {
-  'image/jpeg': [[0xFF, 0xD8, 0xFF]],
-  'image/png':  [[0x89, 0x50, 0x4E, 0x47]],
-};
+// Magic bytes signatures for allowed image types
+const MAGIC_SIGNATURES = [
+  { mime: 'image/jpeg', sig: [0xFF, 0xD8, 0xFF] },
+  { mime: 'image/png',  sig: [0x89, 0x50, 0x4E, 0x47] },
+];
 
-async function verifyMagicBytes(file) {
+// Returns actual MIME type based on file content, or null if not a known image
+async function detectMimeFromBytes(file) {
   const buffer = await file.slice(0, 8).arrayBuffer();
   const bytes = new Uint8Array(buffer);
-  const signatures = MAGIC_BYTES[file.type];
-  if (!signatures) return false;
-  return signatures.some(sig => sig.every((b, i) => bytes[i] === b));
+  const match = MAGIC_SIGNATURES.find(({ sig }) => sig.every((b, i) => bytes[i] === b));
+  return match ? match.mime : null;
+}
+
+// Re-wraps file with corrected MIME type if extension/declared type doesn't match bytes
+async function normalizeFile(file) {
+  const realMime = await detectMimeFromBytes(file);
+  if (!realMime) return null; // not a valid image at all
+  if (file.type === realMime) return file;
+  // Extension mismatch (e.g. .png file that's actually JPEG) — fix silently
+  const ext = realMime === 'image/jpeg' ? '.jpg' : '.png';
+  const baseName = file.name.replace(/\.[^.]+$/, '');
+  return new File([file], baseName + ext, { type: realMime });
 }
 const MAX_CONTEXT_CHARS = 200;
 
@@ -48,10 +59,6 @@ export default function UploadStage({ onBack, onGenerate, dragOnPage }) {
   const handleFile = useCallback(async (file) => {
     setUploadError(null);
     if (!file) return;
-    if (!ACCEPTED_TYPES.includes(file.type)) {
-      setUploadError('Unsupported format. Only PNG and JPG are accepted.');
-      return;
-    }
     if (file.size > MAX_FILE_SIZE) {
       setUploadError('File too large. Maximum size is 10 MB.');
       return;
@@ -60,16 +67,17 @@ export default function UploadStage({ onBack, onGenerate, dragOnPage }) {
       setUploadError('File too small — minimum 1 KB.');
       return;
     }
-    const valid = await verifyMagicBytes(file);
-    if (!valid) {
-      setUploadError('File content does not match its extension. Upload a real PNG or JPG image.');
+    // Detect real type from content — rejects executables, SVG, etc.
+    const normalized = await normalizeFile(file);
+    if (!normalized) {
+      setUploadError('Unsupported format. Only PNG and JPG images are accepted.');
       return;
     }
-    setImageFile(file);
+    setImageFile(normalized);
     const reader = new FileReader();
     reader.onload = (e) => setImagePreview(e.target.result);
     reader.onerror = () => setUploadError('Failed to read file. Please try again.');
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(normalized);
   }, []);
 
   const handleDrop = useCallback((e) => {

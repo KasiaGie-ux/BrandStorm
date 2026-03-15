@@ -16,11 +16,12 @@ const DISPLAY_TYPES = [
   'voiceover_greeting', 'voiceover_story',
 ];
 
-export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, imagePreview, onVoiceoverEnd, audioPlayback, brandCanvas, inputLocked }) {
+export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, onReset, imagePreview, onVoiceoverEnd, audioPlayback, brandCanvas, inputLocked }) {
   const scrollRef = useRef(null);
   const [input, setInput] = useState('');
   const [showOverlay, setShowOverlay] = useState(false);
   const [imageOverlay, setImageOverlay] = useState(null);
+  const [micMutedByAgent, setMicMutedByAgent] = useState(false);
 
   // Stable ref so onaudioprocess closure always reads the latest getIsPlaying
   // without causing useAudioInput to recreate its processor on every render.
@@ -28,12 +29,32 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
   getIsPlayingRef.current = audioPlayback?.getIsPlaying ?? null;
 
   // Mic input — sends PCM chunks to backend as audio_chunk events.
-  // Gate: drop chunks while agent is playing audio to prevent echo feedback loop
-  // (mic captures speaker output → Live API hears its own voice → "multiple agents" effect).
+  // While agent audio plays, only forward chunks that are loud enough to be
+  // a real barge-in (RMS > threshold). This lets echoCancellation handle
+  // normal speaker bleed while still allowing the user to interrupt loudly.
+  const BARGE_IN_RMS = 0.04; // ~-28 dBFS — clearly a human voice, not echo
   const handleAudioChunk = useCallback((base64Data) => {
-    if (getIsPlayingRef.current?.()) return;
-    sendMessage({ type: 'audio_chunk', data: base64Data });
-  }, [sendMessage]); // no audioPlayback dep — read via ref to keep closure stable
+    if (!getIsPlayingRef.current?.()) {
+      // Agent silent — always send
+      sendMessage({ type: 'audio_chunk', data: base64Data });
+      return;
+    }
+    // Agent speaking — only send if RMS exceeds barge-in threshold
+    try {
+      const binary = atob(base64Data);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const samples = new Int16Array(bytes.buffer);
+      let sum = 0;
+      for (let i = 0; i < samples.length; i++) sum += (samples[i] / 32768) ** 2;
+      const rms = Math.sqrt(sum / samples.length);
+      if (rms > BARGE_IN_RMS) {
+        sendMessage({ type: 'audio_chunk', data: base64Data });
+      }
+    } catch {
+      // decode error — skip chunk
+    }
+  }, [sendMessage]); // getIsPlayingRef read via ref — no dep needed
 
   const audioInput = useAudioInput({
     onChunk: handleAudioChunk,
@@ -44,14 +65,33 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
     const onQueryMic = (e) => {
       if (e.detail?.callback) e.detail.callback(audioInput.isRecording);
     };
+    let mutedTimer = null;
+    const onStopMic = () => {
+      if (audioInput.isRecording) audioInput.stop();
+      setMicMutedByAgent(true);
+      // Safety: clear after 15s max in case agent_turn_complete never arrives
+      clearTimeout(mutedTimer);
+      mutedTimer = setTimeout(() => setMicMutedByAgent(false), 15000);
+    };
     const onResumeMic = () => {
       if (!audioInput.isRecording) audioInput.start();
+      setMicMutedByAgent(false);
+      clearTimeout(mutedTimer);
+    };
+    const onPresentingDone = () => {
+      setMicMutedByAgent(false);
+      clearTimeout(mutedTimer);
     };
     window.addEventListener('query-mic-state', onQueryMic);
     window.addEventListener('resume-mic', onResumeMic);
+    window.addEventListener('stop-mic', onStopMic);
+    window.addEventListener('agent-presenting-done', onPresentingDone);
     return () => {
+      clearTimeout(mutedTimer);
       window.removeEventListener('query-mic-state', onQueryMic);
       window.removeEventListener('resume-mic', onResumeMic);
+      window.removeEventListener('stop-mic', onStopMic);
+      window.removeEventListener('agent-presenting-done', onPresentingDone);
     };
   }, [audioInput]);
 
@@ -96,15 +136,12 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
   }
 
   // Canvas-aware stale detection: hide messages for stale elements
+  // Images are never hidden — all generated images remain visible in chat history
   const isStaleByCanvas = (msg) => {
     if (!brandCanvas) return false;
     switch (msg.type) {
-      case 'image_generated': {
-        const t = msg.asset_type;
-        if (!t) return false;
-        const key = t === 'hero_lifestyle' ? 'hero' : t === 'instagram_post' ? 'instagram' : t;
-        return brandCanvas[key]?.status === 'stale';
-      }
+      case 'image_generated':
+        return false; // always show all image tiles, including older ones
       case 'palette_reveal':
       case 'palette_ready':
         return brandCanvas.palette?.status === 'stale';
@@ -362,6 +399,7 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
                 nameNarrationDone={nameNarrationDone}
                 proposalsFrozen={proposalsFrozen}
                 onStopAudio={() => audioPlayback?.flush()}
+                onReset={onReset}
               />
             );
           })}
@@ -394,7 +432,7 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
           )}
         </AnimatePresence>
         <AnimatePresence>
-          {(isGenerating || isStopped) && (
+          {(isGenerating || isStopped || micMutedByAgent) && (
             <motion.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
@@ -403,14 +441,16 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
             >
               <div style={{
                 fontSize: 12,
-                color: isStopped ? raw.red : raw.faint,
+                color: isStopped ? raw.red : micMutedByAgent ? raw.muted : raw.faint,
                 fontFamily: fonts.body,
                 fontStyle: 'italic',
                 fontWeight: isStopped ? 600 : 400,
               }}>
                 {isStopped
                   ? 'Session paused — type a message to resume.'
-                  : "Don't like something? Tell the agent to change it."}
+                  : micMutedByAgent
+                    ? 'Mic off — agent presenting'
+                    : "Don't like something? Tell the agent to change it."}
               </div>
             </motion.div>
           )}

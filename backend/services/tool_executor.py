@@ -223,6 +223,17 @@ class ToolExecutor:
         canvas = session.canvas
         canvas.palette.set(colors, {"mood": mood})
 
+        # Palette change invalidates all generated images — they must be regenerated
+        # with the new colors. Mark each READY image as STALE so the agent knows to redo them.
+        stale_images = []
+        for img_element in ("logo", "hero", "instagram"):
+            el = getattr(canvas, img_element)
+            if el.status == ElementStatus.READY:
+                el.mark_stale()
+                stale_images.append(img_element)
+        if stale_images:
+            logger.info(f"[{session.id}] set_palette | Marked stale: {stale_images}")
+
         events = [
             {"type": "palette_reveal", "mood": mood, "colors": colors},
             {"type": "canvas_update", "canvas": canvas.snapshot()},
@@ -286,7 +297,8 @@ class ToolExecutor:
             "auto_select_seconds": 8,
         }
         session.names_proposed = True
-        logger.info(f"[{session.id}] propose_names | Names: {[n['name'] for n in validated]}")
+        session.proposed_names = [n["name"] for n in validated]
+        logger.info(f"[{session.id}] propose_names | Names: {session.proposed_names}")
         return {"status": "success", "names": [n["name"] for n in validated]}, [
             event,
             {"type": "canvas_update", "canvas": session.canvas.snapshot()},
@@ -398,12 +410,15 @@ class ToolExecutor:
                     {"type": "canvas_update", "canvas": session.canvas.snapshot()},
                 ]
 
-            # Store logo for chaining — and mark hero/instagram stale since they use logo as ref
+            # Cascade stale: logo change → hero + instagram; hero change → instagram
             if element_name == "logo":
                 session.logo_image_bytes = image_bytes
                 session.logo_image_mime = mime_type
                 if session.canvas.hero.status == ElementStatus.READY:
                     session.canvas.hero.mark_stale()
+                if session.canvas.instagram.status == ElementStatus.READY:
+                    session.canvas.instagram.mark_stale()
+            elif element_name == "hero":
                 if session.canvas.instagram.status == ElementStatus.READY:
                     session.canvas.instagram.mark_stale()
 

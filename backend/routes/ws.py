@@ -73,7 +73,12 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
                     "set_brand_identity": _CANVAS_AWARE_NUDGE,
                     "set_palette":        _CANVAS_AWARE_NUDGE,
                     "set_fonts":          _CANVAS_AWARE_NUDGE,
-                    "generate_image":     "ONE sentence reacting to the image. Ask for feedback. STOP. WAIT.",
+                    "generate_image": (
+                        "The image is ready. React in ONE sentence. "
+                        "Ask: 'What do you think?' or 'Happy with it?' STOP. WAIT. "
+                        "DO NOT call any tool. DO NOT generate the next image. "
+                        "Wait for the user to respond."
+                    ),
                     "propose_names":      "Narrate each name: ONE sentence per name. End third with 'That's my pick.' STOP. WAIT.",
                 }
                 # generate_voiceover: Anna's narration plays after — agent must NOT speak

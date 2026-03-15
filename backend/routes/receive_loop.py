@@ -9,6 +9,7 @@ which tool to call without having to guess.
 import base64
 import json
 import logging
+import re
 
 from fastapi import WebSocket, WebSocketDisconnect
 from google.genai import types
@@ -21,6 +22,55 @@ from services.gemini_live import image_bytes_to_part
 logger = logging.getLogger("brand-agent")
 
 _AFFIRMATIONS = {"yes", "ok", "tak", "go", "dalej", "sure", "yep", "yeah", "proceed"}
+
+# Ordinal words → 0-based index
+_ORDINALS = {
+    "first": 0, "one": 0, "1": 0, "jeden": 0, "pierwsza": 0, "pierwszy": 0, "pierwsze": 0,
+    "second": 1, "two": 1, "2": 1, "dwa": 1, "druga": 1, "drugi": 1, "drugie": 1,
+    "third": 2, "three": 2, "3": 2, "trzy": 2, "trzecia": 2, "trzeci": 2, "trzecie": 2,
+}
+
+
+def _detect_name_choice(text: str, proposed_names: list[str]) -> str | None:
+    """Return the chosen name if the user's text clearly identifies one of the proposals.
+
+    Handles:
+      - Ordinal phrases: "the second one", "number two", "first one", "numer dwa"
+      - Direct name: "Satin Spell", "bonbon atelier"
+      - Prefix match: "Satin" → "Satin Spell"
+    """
+    if not proposed_names:
+        return None
+
+    clean = re.sub(r"[.!?,;]+$", "", text.strip()).lower()
+
+    # Ordinal detection — sort by length desc so "second" matches before "one" in "the second one"
+    matched_idx: int | None = None
+    matched_word_len = 0
+    for word, idx in _ORDINALS.items():
+        if idx >= len(proposed_names):
+            continue
+        pattern = rf"\b{re.escape(word)}\b"
+        if re.search(pattern, clean) and len(word) > matched_word_len:
+            matched_idx = idx
+            matched_word_len = len(word)
+    if matched_idx is not None:
+        return proposed_names[matched_idx]
+
+    # Direct name match (exact or prefix)
+    for name in proposed_names:
+        name_lower = name.lower()
+        # Exact
+        if clean == name_lower:
+            return name
+        # User said prefix of name (e.g. "satin" → "Satin Spell")
+        if len(clean) >= 3 and name_lower.startswith(clean):
+            return name
+        # Name is entirely contained in what user said
+        if name_lower in clean:
+            return name
+
+    return None
 
 
 def _resolve_next_step(session: Session) -> str | None:
@@ -123,19 +173,27 @@ async def receive_loop(
                 session.add_transcript("user", text)
 
                 lower = text.lower().strip()
-                if lower.startswith("i choose "):
-                    chosen = text[len("i choose "):].strip()
-                    # Mark name as READY on canvas immediately so _resolve_next_step
-                    # can see it and offer set_brand_identity on the next affirmation.
+
+                # Detect voice/text name selection when names are on offer
+                _voice_chosen = None
+                if session.proposed_names and session.canvas.name.status != "ready":
+                    if lower.startswith("i choose "):
+                        _voice_chosen = text[len("i choose "):].strip()
+                    else:
+                        _voice_chosen = _detect_name_choice(text, session.proposed_names)
+
+                if _voice_chosen:
+                    chosen = _voice_chosen
                     session.canvas.name.set(chosen)
+                    session.proposed_names = []
                     details = (
                         f"User chose the brand name: '{chosen}'.\n"
                         f"Say ONE confident sentence about why this name fits — reference the product visuals.\n"
                         f"Then ask: 'Should I build out the full brand identity?' STOP. Do NOT call any tools yet."
                     )
                     trigger = "name_selected"
-                    # Disarm propose_names watchdog — name was chosen, narration not needed
                     session.pending_tool_response = None
+                    logger.info(f"[{session.id}] Name selected: '{chosen}' (from: '{text}')")
                 elif "user has entered the studio" in lower:
                     details = (
                         "User has entered the Studio. Execute Step 2 of your flow:\n"
@@ -165,6 +223,9 @@ async def receive_loop(
                             )
                             details = f"User said: '{text}'. This confirms your last question or proposal. Act on it now."
                             trigger = "user_approved"
+                            # Consume the guard — next affirmation gets fresh [NEXT STEP] resolution
+                            session.pending_next_step = None
+                            session.pending_next_step_canvas_key = None
                         else:
                             session.pending_next_step = next_step
                             session.pending_next_step_canvas_key = canvas_key

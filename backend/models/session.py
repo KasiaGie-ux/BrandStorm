@@ -48,6 +48,9 @@ class Session:
     # while user is still deciding between the presented names.
     names_proposed: bool = False
 
+    # Names currently on offer — used to detect voice-spoken selection.
+    proposed_names: list[str] = field(default_factory=list)
+
     # Tracks the last [NEXT STEP] instruction sent to the agent.
     # Prevents duplicate instructions when user sends multiple affirmations rapidly
     # before the agent has had a chance to act on the first one.

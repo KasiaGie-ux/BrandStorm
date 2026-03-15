@@ -44,6 +44,29 @@ async def agent_loop(
     """
 
 
+    _SILENCE = b"\x00" * 480  # 15ms silence at 16kHz 16-bit mono — below VAD threshold
+    _IDLE_KEEPALIVE_SEC = 8       # interval between silence pings
+    _IDLE_KEEPALIVE_LIMIT = 120   # stop after 2 minutes of idle keepalive
+    idle_keepalive_task: asyncio.Task | None = None
+
+    async def _idle_keepalive():
+        """Send silence to Live API every 8s for up to 2 minutes after a tool fires."""
+        elapsed = 0
+        try:
+            while elapsed < _IDLE_KEEPALIVE_LIMIT:
+                await asyncio.sleep(_IDLE_KEEPALIVE_SEC)
+                elapsed += _IDLE_KEEPALIVE_SEC
+                try:
+                    await live_session.send_realtime_input(
+                        audio=types.Blob(data=_SILENCE, mime_type="audio/pcm;rate=16000"),
+                    )
+                    logger.debug(f"[{session.id}] Idle keepalive | {elapsed}s")
+                except Exception as ke:
+                    logger.warning(f"[{session.id}] Idle keepalive failed: {ke}")
+                    break
+        except asyncio.CancelledError:
+            pass
+
     try:
         while True:
             async for message in live_session.receive():
@@ -60,6 +83,10 @@ async def agent_loop(
                     if sc.model_turn and sc.model_turn.parts:
                         for part in sc.model_turn.parts:
                             if part.inline_data and part.inline_data.mime_type.startswith("audio/"):
+                                # Agent is producing audio — clear watchdog immediately
+                                if session.pending_tool_response is not None:
+                                    logger.info(f"[{session.id}] Watchdog cleared — agent audio started")
+                                    session.pending_tool_response = None
                                 await send_json(ws, {
                                     "type": "agent_audio",
                                     "data": base64.b64encode(part.inline_data.data).decode(),
@@ -72,6 +99,36 @@ async def agent_loop(
                         if text and text.strip():
                             session.add_transcript("user", text.strip())
                             await send_json(ws, {"type": "user_voice_text", "text": text.strip()})
+
+                            # Detect voice name selection — same logic as receive_loop text input
+                            from routes.receive_loop import _detect_name_choice
+                            from services.context_injector import build_context_message
+                            if session.proposed_names and session.canvas.name.status != "ready":
+                                chosen = _detect_name_choice(text.strip(), session.proposed_names)
+                                if chosen:
+                                    session.canvas.name.set(chosen)
+                                    session.proposed_names = []
+                                    session.pending_tool_response = None
+                                    logger.info(f"[{session.id}] Voice name selected: '{chosen}' (from: '{text.strip()}')")
+                                    ctx = build_context_message(
+                                        session,
+                                        trigger="name_selected",
+                                        details=(
+                                            f"User chose the brand name: '{chosen}'.\n"
+                                            f"Say ONE confident sentence about why this name fits — reference the product visuals.\n"
+                                            f"Then ask: 'Should I build out the full brand identity?' STOP. Do NOT call any tools yet."
+                                        ),
+                                    )
+                                    try:
+                                        await live_session.send_client_content(
+                                            turns=[types.Content(
+                                                role="user",
+                                                parts=[types.Part.from_text(text=ctx)],
+                                            )],
+                                            turn_complete=True,
+                                        )
+                                    except Exception as e:
+                                        logger.warning(f"[{session.id}] name_selected inject failed: {e}")
 
                     # Output transcription (agent speech)
                     if getattr(sc, "output_transcription", None):
@@ -91,6 +148,10 @@ async def agent_loop(
 
                     # Turn complete — always send agent_turn_complete
                     if getattr(sc, "turn_complete", False):
+                        # Agent responded — stop idle keepalive
+                        if idle_keepalive_task and not idle_keepalive_task.done():
+                            idle_keepalive_task.cancel()
+                            idle_keepalive_task = None
                         await send_json(ws, {
                             "type": "agent_turn_complete",
                             "canvas": session.canvas.snapshot(),
@@ -163,6 +224,11 @@ async def agent_loop(
                         raise
                     logger.info(f"[{session.id}] Batch tool response | Tools: {tool_names}")
 
+                    # Start idle keepalive — keeps Live API session alive while agent processes
+                    if idle_keepalive_task and not idle_keepalive_task.done():
+                        idle_keepalive_task.cancel()
+                    idle_keepalive_task = asyncio.create_task(_idle_keepalive())
+
                     # Mark pending — tool_watchdog (in ws.py) will nudge if agent stays silent
                     session.pending_tool_response = tool_names[:]
                     # Clear next-step dedup guard — tool fired, canvas state will change.
@@ -194,4 +260,5 @@ async def agent_loop(
         await send_json(ws, {"type": "error", "message": str(e)})
         raise
     finally:
-        pass
+        if idle_keepalive_task and not idle_keepalive_task.done():
+            idle_keepalive_task.cancel()

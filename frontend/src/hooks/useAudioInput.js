@@ -28,6 +28,8 @@ export default function useAudioInput({ onChunk, onSilenceTimeout }) {
   const sourceRef = useRef(null);
   const silenceTimerRef = useRef(null);
   const recordingRef = useRef(false);
+  const accumulatedChunksRef = useRef([]);
+  const accumulatedLengthRef = useRef(0);
 
   /** Downsample from source rate to 16kHz. */
   const downsample = useCallback((float32Array, fromRate) => {
@@ -71,34 +73,42 @@ export default function useAudioInput({ onChunk, onSilenceTimeout }) {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
+          // Prefer a clean, high-quality mic capture
+          googEchoCancellation: true,
+          googNoiseSuppression: true,
+          googHighpassFilter: true,
+          googAutoGainControl: true,
         },
       });
 
       streamRef.current = stream;
       setPermissionDenied(false);
 
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      // Request 16kHz context directly — avoids resampling artifacts when possible
+      const ctx = new (window.AudioContext || window.webkitAudioContext)({
+        sampleRate: TARGET_SAMPLE_RATE,
+      });
       ctxRef.current = ctx;
 
       const source = ctx.createMediaStreamSource(stream);
       sourceRef.current = source;
 
-      // ScriptProcessorNode with 4096 buffer (~93ms at 44.1kHz)
-      // Send every ~20ms per Live API best practices (20-40ms chunks recommended)
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      // 2048-sample buffer for tighter latency (~128ms at 16kHz)
+      const processor = ctx.createScriptProcessor(2048, 1, 1);
       processorRef.current = processor;
 
-      let accumulatedChunks = [];
-      let accumulatedLength = 0;
-      const TARGET_CHUNK_SAMPLES = Math.floor(TARGET_SAMPLE_RATE * 0.02); // ~20ms
+      accumulatedChunksRef.current = [];
+      accumulatedLengthRef.current = 0;
+      // Send ~100ms chunks — good balance for Live API responsiveness
+      const TARGET_CHUNK_SAMPLES = Math.floor(TARGET_SAMPLE_RATE * 0.1);
 
       processor.onaudioprocess = (e) => {
         if (!recordingRef.current) return;
 
         const input = e.inputBuffer.getChannelData(0);
         const downsampled = downsample(new Float32Array(input), ctx.sampleRate);
-        accumulatedChunks.push(downsampled);
-        accumulatedLength += downsampled.length;
+        accumulatedChunksRef.current.push(downsampled);
+        accumulatedLengthRef.current += downsampled.length;
 
         // Check for silence
         let rms = 0;
@@ -111,16 +121,15 @@ export default function useAudioInput({ onChunk, onSilenceTimeout }) {
           resetSilenceTimer();
         }
 
-        // Send every ~250ms worth of samples
-        if (accumulatedLength >= TARGET_CHUNK_SAMPLES) {
-          const samples = new Float32Array(accumulatedLength);
+        if (accumulatedLengthRef.current >= TARGET_CHUNK_SAMPLES) {
+          const samples = new Float32Array(accumulatedLengthRef.current);
           let offset = 0;
-          for (const chunk of accumulatedChunks) {
+          for (const chunk of accumulatedChunksRef.current) {
             samples.set(chunk, offset);
             offset += chunk.length;
           }
-          accumulatedChunks = [];
-          accumulatedLength = 0;
+          accumulatedChunksRef.current = [];
+          accumulatedLengthRef.current = 0;
           const base64 = float32ToPcm16Base64(samples);
           onChunk?.(base64);
         }
@@ -143,6 +152,20 @@ export default function useAudioInput({ onChunk, onSilenceTimeout }) {
   const stop = useCallback(() => {
     recordingRef.current = false;
     setIsRecording(false);
+
+    // Flush any remaining accumulated samples before closing
+    if (accumulatedLengthRef.current > 0 && onChunk) {
+      const samples = new Float32Array(accumulatedLengthRef.current);
+      let offset = 0;
+      for (const chunk of accumulatedChunksRef.current) {
+        samples.set(chunk, offset);
+        offset += chunk.length;
+      }
+      accumulatedChunksRef.current = [];
+      accumulatedLengthRef.current = 0;
+      const base64 = float32ToPcm16Base64(samples);
+      onChunk(base64);
+    }
 
     if (processorRef.current) {
       processorRef.current.disconnect();
