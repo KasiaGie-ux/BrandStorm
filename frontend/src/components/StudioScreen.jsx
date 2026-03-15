@@ -200,6 +200,21 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
   const proposalsFrozen = lastProposalMsgIdx !== -1
     && messages.slice(lastProposalMsgIdx + 1).some(m => m.type === 'user');
 
+  // Debounce audio state to prevent micro-gaps between chunks from starting the timer early.
+  // We use 2000ms because the Live API sometimes pauses longer between sentences.
+  const [debouncedAudioPlaying, setDebouncedAudioPlaying] = useState(false);
+  const hasAudioPlayedRef = useRef(false);
+
+  useEffect(() => {
+    if (agentAudioPlaying) {
+      hasAudioPlayedRef.current = true;
+      setDebouncedAudioPlaying(true);
+    } else {
+      const timer = setTimeout(() => setDebouncedAudioPlaying(false), 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [agentAudioPlaying]);
+
   const [nameNarrationDone, setNameNarrationDone] = useState(false);
   const lastProposalIdxRef = useRef(-1);
 
@@ -207,14 +222,23 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
     // Reset if proposals changed (new round)
     if (lastProposalMsgIdx !== lastProposalIdxRef.current) {
       lastProposalIdxRef.current = lastProposalMsgIdx;
+      // If audio is already playing when proposals arrive, it counts as started!
+      hasAudioPlayedRef.current = agentAudioPlaying || debouncedAudioPlaying; 
       setNameNarrationDone(false);
     }
 
-    // Agent finished generating AND audio finished playing → narration done
-    if (hasAgentTurnCompleteAfterProposals && !agentAudioPlaying && !nameNarrationDone && lastProposalMsgIdx !== -1) {
+    // Agent finished generating AND audio started THEN finished playing (debounced) → narration done
+    // If hasAudioPlayedRef.current is false, it means the audio hasn't even *started* yet for these proposals!
+    if (hasAgentTurnCompleteAfterProposals && hasAudioPlayedRef.current && !debouncedAudioPlaying && !nameNarrationDone && lastProposalMsgIdx !== -1) {
+      console.log('DEBUG [StudioScreen]: Triggering nameNarrationDone!', {
+        hasAgentTurnCompleteAfterProposals,
+        debouncedAudioPlaying,
+        hasAudioPlayedRef: hasAudioPlayedRef.current,
+        lastProposalMsgIdx,
+      });
       setNameNarrationDone(true);
     }
-  }, [hasAgentTurnCompleteAfterProposals, agentAudioPlaying, lastProposalMsgIdx, nameNarrationDone]);
+  }, [hasAgentTurnCompleteAfterProposals, debouncedAudioPlaying, lastProposalMsgIdx, nameNarrationDone]);
 
   const isGenerating = phase === 'GENERATING' || phase === 'REFINING';
   const isStopped = phase === 'STOPPED';

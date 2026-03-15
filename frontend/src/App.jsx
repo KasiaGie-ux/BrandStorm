@@ -474,10 +474,14 @@ export default function App() {
         break;
 
       case 'font_suggestion':
-        // Dedup: skip only if last font_suggestion has same fonts.
+        // Dedup: skip only if last font_suggestion has exact same font families.
         setMessages(prev => {
           const lastFont = [...prev].reverse().find(m => m.type === 'font_suggestion');
-          if (lastFont && lastFont.heading === event.heading && lastFont.body === event.body) return prev;
+          if (lastFont && 
+              lastFont.heading?.family === event.heading?.family && 
+              lastFont.body?.family === event.body?.family) {
+            return prev;
+          }
           return [...prev, {
             type: 'font_suggestion',
             heading: event.heading, body: event.body,

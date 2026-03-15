@@ -98,6 +98,22 @@ async def agent_loop(
                     all_events = []
                     tool_names = []
 
+                    # Clear BEFORE signaling frontend — prevents race condition where
+                    # frontend sends audio_playback_done before we clear, causing a
+                    # 30-second timeout in delayed_response.
+                    session.audio_playback_event.clear()
+
+                    # Break the Frontend-Backend Deadlock:
+                    # The frontend event queue waits for `agent_turn_complete` to flush its events
+                    # and eventually send the `audio_playback_done` signal back to the server.
+                    # BUT the Live API never sends `turn_complete` while waiting for a tool response!
+                    # So we manually signal the frontend that the audio generation phase of this turn is complete
+                    # the moment we receive the tool call, allowing the frontend to flush and unlock the backend.
+                    await send_json(ws, {
+                        "type": "agent_turn_complete",
+                        "canvas": session.canvas.snapshot(),
+                    })
+
                     for fc in message.tool_call.function_calls:
                         # Notify frontend of tool invocation
                         await send_json(ws, {
@@ -118,29 +134,49 @@ async def agent_loop(
                     for event in all_events:
                         await send_json(ws, event)
 
-                    # Return ALL tool results to Live API in one batch
-                    await live_session.send_tool_response(
-                        function_responses=all_responses,
-                    )
-                    logger.info(f"[{session.id}] Batch tool response | Tools: {tool_names}")
+                    # CRITICAL FIX for Audio Truncation (Dynamic Wait without blocking):
+                    # We must NOT send the tool response back to the Live API until the frontend 
+                    # has completely finished playing the agent's audio for the current turn.
+                    # HOWEVER, we cannot `await` it here directly, because that blocks this `receive()`
+                    # generator, starving the frontend of the remaining audio chunks!
+                    # Therefore, we spawn a background task to wait and send the response.
+                    async def delayed_response(responses, names) -> None:
+                        logger.info(f"[{session.id}] Waiting for frontend audio_playback_done before sending tool response...")
+                        try:
+                            await asyncio.wait_for(session.audio_playback_event.wait(), timeout=30.0)
+                            logger.info(f"[{session.id}] Audio playback finished, proceeding with tool response.")
+                        except asyncio.TimeoutError:
+                            logger.warning(f"[{session.id}] Timeout waiting for audio_playback_done. Proceeding anyway.")
 
-                    # Inject updated canvas context so the agent knows the
-                    # current state and continues the conversation.  Without
-                    # this the Live API closes the stream immediately after
-                    # the tool response.
-                    tools_summary = ", ".join(tool_names)
-                    context = build_context_message(
-                        session,
-                        trigger="tool_results",
-                        details=f"Tools completed: {tools_summary}. Continue the conversation.",
-                    )
-                    await live_session.send_client_content(
-                        turns=[types.Content(
-                            role="user",
-                            parts=[types.Part.from_text(text=context)],
-                        )],
-                        turn_complete=True,
-                    )
+                        # Return ALL tool results to Live API in one batch
+                        await live_session.send_tool_response(
+                            function_responses=responses,
+                        )
+                        logger.info(f"[{session.id}] Batch tool response | Tools: {names}")
+                        
+                        # Re-introduce the Canvas State Payload:
+                        # Since we waited for `audio_playback_done`, it is safe to nudge the model 
+                        # and hand it the updated canvas state to force continuation.
+                        from services.context_injector import build_context_message
+                        context_msg = build_context_message(session, trigger="tool_result", details=f"Tools executed: {names}")
+                        await live_session.send_client_content(
+                            turns=[types.Content(
+                                role="user",
+                                parts=[types.Part.from_text(text=context_msg)],
+                            )],
+                            turn_complete=True,
+                        )
+                        logger.info(f"[{session.id}] Sent canvas context nudge after tool response.")
+                    
+                    # Fire and forget
+                    asyncio.create_task(delayed_response(all_responses, tool_names))
+
+                    # The Live API will autonomously generate the next turn 
+                    # based on the tool responses.
+                    # We NO LONGER force-inject a client context here because 
+                    # calling an explicit 'send_client_content' acts as a barge-in,
+                    # interrupting any slower audio chunks the server is still sending 
+                    # from the sentence immediately preceding this tool call.
 
         # If we reach here the Live API stream ended (server closed it)
         logger.warning(f"[{session.id}] Live API stream ended (receive generator exhausted)")

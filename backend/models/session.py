@@ -5,6 +5,7 @@ No phases. No boolean flags. The canvas IS the state.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -39,6 +40,9 @@ class Session:
 
     # Background async tasks (image gen, TTS) — keyed by task name
     background_tasks: dict[str, Any] = field(default_factory=dict)
+    
+    # Event signaling that the frontend has finished playing agent audio
+    audio_playback_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     def add_transcript(self, role: str, text: str) -> None:
         self.transcript.append({"role": role, "text": text, "ts": time.time()})

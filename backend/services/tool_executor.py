@@ -113,6 +113,7 @@ class ToolExecutor:
             events = []
 
         latency = (time.perf_counter() - t0) * 1000
+
         logger.info(
             f"[{session.id}] Tool: {name} | Latency: {latency:.0f}ms | "
             f"Status: {result.get('status', 'unknown')}"

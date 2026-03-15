@@ -115,9 +115,11 @@ async def receive_loop(
                 )
 
             elif msg_type == "audio_playback_done":
-                # Frontend finished playing agent audio.
-                # No action needed — agent decides when to continue.
-                pass
+                # Frontend finished playing agent audio AND rendering queued visual events.
+                # Signal agent_loop that it is safe to send block-level tool responses,
+                # preventing barge-in aborts.
+                logger.info(f"[{session.id}] Received audio_playback_done")
+                session.audio_playback_event.set()
 
             # Ignore ping, keepalive, and unknown message types
 
