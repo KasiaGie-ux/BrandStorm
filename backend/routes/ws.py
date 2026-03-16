@@ -47,6 +47,11 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
         ) as live_session:
             logger.info(f"[{session_id}] Live API connected")
 
+            # Brief settle delay — Live API needs ~1s before it can generate audio
+            # on the first turn. Without this, the first send_client_content may
+            # return a silent turn_complete (empty output) on fast reconnects.
+            await asyncio.sleep(1.0)
+
             await send_json(ws, {"type": "session_ready"})
 
             async def keepalive_loop():

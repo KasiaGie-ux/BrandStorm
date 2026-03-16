@@ -30,7 +30,6 @@ ASPECT_RATIOS: dict[str, str] = {
     "hero": "16:9",
     "instagram_post": "4:5",
     "instagram": "4:5",
-    "packaging": "1:1",
 }
 
 MAX_RETRIES_429 = 3
