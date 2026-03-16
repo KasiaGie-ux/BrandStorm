@@ -63,6 +63,7 @@ class Session:
     # Cleared when agent produces audio/text. If turn_complete arrives
     # while this is True, the opening was silent and should be retried.
     opening_awaiting_response: bool = False
+    opening_retry_count: int = 0  # number of times opening was re-armed after interrupted
 
     # Tracks the last [NEXT STEP] instruction sent to the agent.
     # Prevents duplicate instructions when user sends multiple affirmations rapidly

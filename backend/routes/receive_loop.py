@@ -6,6 +6,7 @@ instruction derived from the current canvas state, so the agent knows exactly
 which tool to call without having to guess.
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -300,23 +301,18 @@ async def receive_loop(
                             else "User uploaded a product image. CRITICAL: Execute your OPENING SEQUENCE now. Then STOP immediately.",
                 )
 
-                # Send image first, then context text as a separate turn.
-                # Live API ignores combined image+text turns silently — two sends required.
+                # Brief settle before sending — Live API needs time after session_ready
+                # before it can process client_content without generating spurious interrupted events.
+                await asyncio.sleep(1.5)
+
+                # Send image + context in a single turn (documented pattern).
                 session.opening_awaiting_response = True
                 image_part = image_bytes_to_part(image_bytes, mime_type)
-                logger.info(f"[{session.id}] Sending image to Live API")
+                logger.info(f"[{session.id}] Sending image + context to Live API")
                 await live_session.send_client_content(
                     turns=[types.Content(
                         role="user",
-                        parts=[image_part],
-                    )],
-                    turn_complete=False,
-                )
-                logger.info(f"[{session.id}] Sending context to Live API")
-                await live_session.send_client_content(
-                    turns=[types.Content(
-                        role="user",
-                        parts=[types.Part.from_text(text=canvas_context)],
+                        parts=[image_part, types.Part.from_text(text=canvas_context)],
                     )],
                     turn_complete=True,
                 )

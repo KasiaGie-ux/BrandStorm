@@ -99,14 +99,11 @@ async def agent_loop(
                         f"waiting={waiting} gen_complete={gen_complete} reason={turn_reason} interrupted={interrupted}"
                     )
 
-                    # Barge-in: agent was interrupted by user
+                    # Barge-in: agent was interrupted.
+                    # Do NOT re-arm opening retry here — our own send_client_content retries
+                    # cause interrupted events, creating an infinite loop.
                     if interrupted:
-                        # If interrupted before agent produced any opening audio/text
-                        # (canvas still empty = agent never started), re-arm the opening
-                        # flag so the next turn_complete triggers another retry.
-                        if not session.opening_awaiting_response and session.canvas.ready_count == 0:
-                            logger.warning(f"[{session.id}] Interrupted during opening — re-arming retry")
-                            session.opening_awaiting_response = True
+                        logger.debug(f"[{session.id}] interrupted | opening_awaiting={session.opening_awaiting_response}")
                         await send_json(ws, {"type": "agent_audio_interrupted"})
                         continue
 
