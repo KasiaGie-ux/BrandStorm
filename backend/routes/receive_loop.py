@@ -301,6 +301,7 @@ async def receive_loop(
                 )
 
                 # Send image + context to Live API
+                session.opening_awaiting_response = True
                 image_part = image_bytes_to_part(image_bytes, mime_type)
                 await live_session.send_client_content(
                     turns=[types.Content(

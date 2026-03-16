@@ -17,6 +17,12 @@ export default function useWebSocket({ onMessage, onStatusChange }) {
   const sessionIdRef = useRef(null);
   const intentionalClose = useRef(false);
 
+  // Store onMessage in a ref so the WebSocket's onmessage handler always
+  // calls the latest version — avoids stale closures when handleWsMessage
+  // is recreated after state changes (e.g. sessionId update).
+  const onMessageRef = useRef(onMessage);
+  onMessageRef.current = onMessage;
+
   const updateStatus = useCallback((status) => {
     onStatusChange?.(status);
   }, [onStatusChange]);
@@ -46,7 +52,7 @@ export default function useWebSocket({ onMessage, onStatusChange }) {
     ws.onmessage = (evt) => {
       try {
         const data = JSON.parse(evt.data);
-        onMessage?.(data);
+        onMessageRef.current?.(data);
       } catch {
         // Binary frame (audio) — ignore for now (Phase 5)
       }
@@ -77,7 +83,7 @@ export default function useWebSocket({ onMessage, onStatusChange }) {
     ws.onerror = () => {
       // onclose will fire after this
     };
-  }, [onMessage, updateStatus]);
+  }, [updateStatus]);
 
   const disconnect = useCallback(() => {
     intentionalClose.current = true;

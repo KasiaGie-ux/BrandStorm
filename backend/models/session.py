@@ -55,6 +55,11 @@ class Session:
     # Names currently on offer — used to detect voice-spoken selection.
     proposed_names: list[str] = field(default_factory=list)
 
+    # Set to True when the opening sequence is sent to Live API.
+    # Cleared when agent produces audio/text. If turn_complete arrives
+    # while this is True, the opening was silent and should be retried.
+    opening_awaiting_response: bool = False
+
     # Tracks the last [NEXT STEP] instruction sent to the agent.
     # Prevents duplicate instructions when user sends multiple affirmations rapidly
     # before the agent has had a chance to act on the first one.

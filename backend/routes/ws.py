@@ -22,6 +22,11 @@ from routes.receive_loop import receive_loop
 logger = logging.getLogger("brand-agent")
 router = APIRouter()
 
+# Track whether this process has served a Live API session before.
+# First session needs a longer settle delay because the Live API
+# connection may not be fully ready to generate audio immediately.
+_has_served_session = False
+
 
 @router.websocket("/ws/{session_id}")
 async def websocket_endpoint(ws: WebSocket, session_id: str, token: str = Query(default="")):
@@ -50,10 +55,14 @@ async def websocket_endpoint(ws: WebSocket, session_id: str, token: str = Query(
         ) as live_session:
             logger.info(f"[{session_id}] Live API connected")
 
-            # Brief settle delay — Live API needs ~1s before it can generate audio
+            # Settle delay — Live API needs time before it can generate audio
             # on the first turn. Without this, the first send_client_content may
-            # return a silent turn_complete (empty output) on fast reconnects.
-            await asyncio.sleep(1.0)
+            # return a silent turn_complete (empty output).
+            # First session on a cold process needs longer (2s) to avoid silent turns.
+            global _has_served_session
+            settle = 2.0 if not _has_served_session else 1.0
+            _has_served_session = True
+            await asyncio.sleep(settle)
 
             await send_json(ws, {"type": "session_ready"})
 

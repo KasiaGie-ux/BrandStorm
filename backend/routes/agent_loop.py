@@ -108,7 +108,8 @@ async def agent_loop(
                     if sc.model_turn and sc.model_turn.parts:
                         for part in sc.model_turn.parts:
                             if part.inline_data and part.inline_data.mime_type.startswith("audio/"):
-                                # Agent is producing audio — clear watchdog immediately
+                                # Agent is producing audio — clear watchdog and opening flag
+                                session.opening_awaiting_response = False
                                 if session.pending_tool_response is not None:
                                     logger.info(f"[{session.id}] Watchdog cleared — agent audio started")
                                     session.pending_tool_response = None
@@ -142,6 +143,8 @@ async def agent_loop(
                         text = getattr(sc.output_transcription, "text", "")
                         finished = getattr(sc.output_transcription, "finished", None)
                         logger.info(f"[{session.id}] output_tx | text={repr(text[:60]) if text else repr(text)} finished={finished}")
+                        if text:
+                            session.opening_awaiting_response = False
                         if text and not session.finalize_in_progress:
                             await send_json(ws, {
                                 "type": "agent_text",
@@ -160,6 +163,38 @@ async def agent_loop(
                         if idle_keepalive_task and not idle_keepalive_task.done():
                             idle_keepalive_task.cancel()
                             idle_keepalive_task = None
+
+                        # Silent first turn: Live API returned turn_complete without
+                        # producing any audio/text for the opening sequence.
+                        # Retry once by re-sending the opening instruction.
+                        if session.opening_awaiting_response:
+                            session.opening_awaiting_response = False
+                            logger.warning(
+                                f"[{session.id}] Silent turn_complete on opening — retrying"
+                            )
+                            try:
+                                from services.context_injector import build_context_message
+                                retry_ctx = build_context_message(
+                                    session,
+                                    trigger="session_start",
+                                    details=(
+                                        "CRITICAL: Execute your OPENING SEQUENCE now. "
+                                        "Say EXACTLY 3 dramatic adjective words. "
+                                        "Then introduce yourself. STOP."
+                                    ),
+                                )
+                                await live_session.send_client_content(
+                                    turns=[types.Content(
+                                        role="user",
+                                        parts=[types.Part.from_text(text=retry_ctx)],
+                                    )],
+                                    turn_complete=True,
+                                )
+                            except Exception as re_err:
+                                logger.error(f"[{session.id}] Opening retry failed: {re_err}")
+                            # Don't send agent_turn_complete to frontend — this was a no-op turn
+                            continue
+
                         await send_json(ws, {
                             "type": "agent_turn_complete",
                             "canvas": session.canvas.snapshot(),

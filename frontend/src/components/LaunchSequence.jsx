@@ -255,7 +255,8 @@ export default function LaunchSequence({ imagePreview, firstAgentText, onComplet
     return () => clearTimeout(hardTimeout);
   }, [phase, firstTurnDone, isPlaying, triggerTransitionAndComplete]);
 
-  // Fallback: if nothing triggered words after 7s, use whatever text we have or skip
+  // Fallback: if nothing triggered words after 12s, use whatever text we have or skip.
+  // 12s accommodates cold-start delays (Live API connect + first turn generation).
   useEffect(() => {
     const t = setTimeout(() => {
       if (!wordsTriggered.current) {
@@ -272,17 +273,17 @@ export default function LaunchSequence({ imagePreview, firstAgentText, onComplet
           triggerTransitionAndComplete();
         }
       }
-    }, 7000);
+    }, 12000);
     return () => clearTimeout(t);
   }, [fireComplete, parsed.opener, parsed.intro, firstAgentText, triggerTransitionAndComplete]);
 
-  // Hard fallback: if still not complete after 20s, transition anyway
+  // Hard fallback: if still not complete after 25s, transition anyway
   useEffect(() => {
     const t = setTimeout(() => {
       if (!completeFired.current) {
         triggerTransitionAndComplete();
       }
-    }, 20000);
+    }, 25000);
     return () => clearTimeout(t);
   }, [triggerTransitionAndComplete]);
 
