@@ -213,7 +213,7 @@ export default function LaunchSequence({ imagePreview, firstAgentText, onComplet
 
     // Require ≥2 complete word-period tokens to avoid triggering on partial
     // first word (e.g. "uminous." mid-stream)
-    if (firstAgentText && parsed.opener && (parsed.opener.match(/\./g) || []).length >= 1) {
+    if (firstAgentText && parsed.opener && (parsed.opener.match(/\./g) || []).length >= 2) {
       wordsTriggered.current = true;
       setLockedOpener(parsed.opener);
       setLockedIntro(parsed.intro || "I'm Charon, your creative director. Let's build something extraordinary.");

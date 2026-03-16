@@ -115,21 +115,21 @@ def _resolve_next_step(session: Session) -> str | None:
     # Step 12: fonts ready but logo missing → generate_image logo
     if c.fonts.status == ready and c.logo.status == empty:
         return (
-            "MANDATORY: You MUST call generate_image(asset_type='logo') RIGHT NOW. "
+            "MANDATORY: You MUST call generate_image(element='logo') RIGHT NOW. "
             "Say max 6 words first. Then call the tool. No exceptions."
         )
 
     # Step 14: logo ready but hero missing → generate_image hero
     if c.logo.status == ready and c.hero.status == empty:
         return (
-            "MANDATORY: You MUST call generate_image(asset_type='hero_lifestyle') RIGHT NOW. "
+            "MANDATORY: You MUST call generate_image(element='hero') RIGHT NOW. "
             "Say max 6 words first. Then call the tool. No exceptions."
         )
 
     # Step 16: hero ready but instagram missing → generate_image instagram
     if c.hero.status == ready and c.instagram.status == empty:
         return (
-            "MANDATORY: You MUST call generate_image(asset_type='instagram_post') RIGHT NOW. "
+            "MANDATORY: You MUST call generate_image(element='instagram') RIGHT NOW. "
             "Say max 6 words first. Then call the tool. No exceptions."
         )
 

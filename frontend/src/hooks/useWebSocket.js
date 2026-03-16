@@ -16,7 +16,6 @@ export default function useWebSocket({ onMessage, onStatusChange }) {
   const reconnectCount = useRef(0);
   const sessionIdRef = useRef(null);
   const intentionalClose = useRef(false);
-  const connectGenRef = useRef(0); // incremented on every connect() — stale onclose handlers bail out
 
   // Store onMessage in a ref so the WebSocket's onmessage handler always
   // calls the latest version — avoids stale closures when handleWsMessage
@@ -29,9 +28,6 @@ export default function useWebSocket({ onMessage, onStatusChange }) {
   }, [onStatusChange]);
 
   const connect = useCallback((sessionId) => {
-    // Bump generation counter — any pending onclose from previous connections will bail out
-    const gen = ++connectGenRef.current;
-
     // Clean up existing connection
     if (wsRef.current) {
       intentionalClose.current = true;
@@ -49,37 +45,35 @@ export default function useWebSocket({ onMessage, onStatusChange }) {
     updateStatus('connecting');
 
     ws.onopen = () => {
-      if (connectGenRef.current !== gen) return;
       reconnectCount.current = 0;
       updateStatus('connected');
     };
 
     ws.onmessage = (evt) => {
-      if (connectGenRef.current !== gen) return;
       try {
         const data = JSON.parse(evt.data);
         onMessageRef.current?.(data);
       } catch {
-        // Binary frame (audio) — ignore
+        // Binary frame (audio) — ignore for now (Phase 5)
       }
     };
 
     ws.onclose = () => {
-      // Stale handler — a newer connect() call already took over
-      if (connectGenRef.current !== gen) return;
+      if (wsRef.current !== ws) return; // replaced by a newer connect() call — ignore
       wsRef.current = null;
       if (intentionalClose.current) {
         updateStatus('disconnected');
         return;
       }
 
-      // Auto-reconnect same session
+      // Auto-reconnect
       if (reconnectCount.current < MAX_RECONNECT) {
         reconnectCount.current++;
         updateStatus('reconnecting');
         setTimeout(() => {
-          if (connectGenRef.current !== gen) return; // superseded while waiting
-          if (!intentionalClose.current) connect(sessionIdRef.current);
+          if (!intentionalClose.current) {
+            connect(sessionIdRef.current);
+          }
         }, RECONNECT_DELAY_MS * reconnectCount.current);
       } else {
         updateStatus('failed');

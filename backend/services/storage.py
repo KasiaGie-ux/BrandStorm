@@ -76,20 +76,11 @@ class StorageService:
         t0 = time.perf_counter()
         buf = io.BytesIO()
 
-        files_added = 0
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             for asset_type, url in asset_urls.items():
                 file_path = self._url_to_local_path(url)
                 if file_path and file_path.exists():
                     zf.write(file_path, arcname=f"{asset_type}{file_path.suffix}")
-                    files_added += 1
-                elif USE_GCS:
-                    logger.warning(
-                        f"[{session_id}] create_zip | Skipping GCS asset (not local): "
-                        f"{asset_type} → {url}"
-                    )
-        if files_added == 0:
-            logger.warning(f"[{session_id}] create_zip | ZIP is empty — no local assets found")
 
         zip_bytes = buf.getvalue()
         zip_filename = f"{session_id}/brand_kit.zip"
