@@ -174,6 +174,7 @@ async def agent_loop(
                             )
                             try:
                                 from services.context_injector import build_context_message
+                                from services.gemini_live import image_bytes_to_part
                                 retry_ctx = build_context_message(
                                     session,
                                     trigger="session_start",
@@ -183,11 +184,14 @@ async def agent_loop(
                                         "Then introduce yourself. STOP."
                                     ),
                                 )
+                                parts = [types.Part.from_text(text=retry_ctx)]
+                                if session.product_image_bytes:
+                                    parts.insert(0, image_bytes_to_part(
+                                        session.product_image_bytes,
+                                        session.product_image_mime or "image/jpeg",
+                                    ))
                                 await live_session.send_client_content(
-                                    turns=[types.Content(
-                                        role="user",
-                                        parts=[types.Part.from_text(text=retry_ctx)],
-                                    )],
+                                    turns=[types.Content(role="user", parts=parts)],
                                     turn_complete=True,
                                 )
                             except Exception as re_err:

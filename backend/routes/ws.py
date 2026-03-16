@@ -60,7 +60,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str, token: str = Query(
             # return a silent turn_complete (empty output).
             # First session on a cold process needs longer (2s) to avoid silent turns.
             global _has_served_session
-            settle = 2.0 if not _has_served_session else 1.0
+            settle = 3.0 if not _has_served_session else 2.0
             _has_served_session = True
             await asyncio.sleep(settle)
 
@@ -115,7 +115,9 @@ async def websocket_endpoint(ws: WebSocket, session_id: str, token: str = Query(
                                 break
                         if session.pending_tool_response is None:
                             continue
-                        tool_name = tools[0] if tools else ""
+                        # Re-read current pending tools — may have changed during wait
+                        current_tools = session.pending_tool_response or tools
+                        tool_name = current_tools[0] if current_tools else ""
                         # These tools handle their own flow — watchdog must NOT nudge.
                         if tool_name in ("generate_voiceover", "propose_names", "finalize_brand_kit"):
                             session.pending_tool_response = None
