@@ -7,6 +7,7 @@ set -euo pipefail
 
 PROJECT_ID="${GCP_PROJECT:-brandstorm-2026}"
 REGION="${GCP_REGION:-us-central1}"
+ACCESS_TOKEN="${ACCESS_TOKEN:-}"
 SERVICE_NAME="brandstorm"
 IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/brand-in-a-box/$SERVICE_NAME"
 SA_NAME="brand-agent"
@@ -78,7 +79,7 @@ gcloud run deploy "$SERVICE_NAME" \
   --min-instances=0 \
   --max-instances=1 \
   --timeout=300 \
-  --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION,GOOGLE_GENAI_USE_VERTEXAI=true" \
+  --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION,GOOGLE_GENAI_USE_VERTEXAI=true${ACCESS_TOKEN:+,ACCESS_TOKEN=$ACCESS_TOKEN}" \
   --quiet
 
 # --- Output ---
