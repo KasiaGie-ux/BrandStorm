@@ -4,11 +4,18 @@ import logging
 import mimetypes
 import uuid
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
+from config import ACCESS_TOKEN
 from services import brand_state
 from services.storage import StorageService
+
+
+def _verify_token(token: str = Query(default=""), x_access_token: str = Header(default="")):
+    t = token or x_access_token
+    if ACCESS_TOKEN and t != ACCESS_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 logger = logging.getLogger("brand-agent")
 router = APIRouter(prefix="/api")
@@ -24,7 +31,7 @@ async def health():
 _MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
-@router.post("/upload")
+@router.post("/upload", dependencies=[Depends(_verify_token)])
 async def upload_product_image(file: UploadFile = File(...)):
     """Upload product image, create session, return session_id + image URL."""
     session_id = uuid.uuid4().hex[:12]

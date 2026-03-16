@@ -32,7 +32,8 @@ export default function useWebSocket({ onMessage, onStatusChange }) {
     intentionalClose.current = false;
     reconnectCount.current = 0;
 
-    const url = `${WS_BASE}/ws/${sessionId}`;
+    const token = new URLSearchParams(window.location.search).get('token') || '';
+    const url = `${WS_BASE}/ws/${sessionId}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
     const ws = new WebSocket(url);
     wsRef.current = ws;
     updateStatus('connecting');

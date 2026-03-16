@@ -29,6 +29,13 @@ variable "gemini_api_key" {
   sensitive   = true
 }
 
+variable "access_token" {
+  description = "Bearer token for frontend access (empty = auth disabled)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 # ── Provider ─────────────────────────────────────────────────────────────────
 
 provider "google" {
@@ -144,6 +151,13 @@ resource "google_cloud_run_v2_service" "brandstorm" {
         content {
           name  = "GEMINI_API_KEY"
           value = var.gemini_api_key
+        }
+      }
+      dynamic "env" {
+        for_each = var.access_token != "" ? [1] : []
+        content {
+          name  = "ACCESS_TOKEN"
+          value = var.access_token
         }
       }
     }

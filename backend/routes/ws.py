@@ -7,9 +7,9 @@ Clean architecture: no pregen, no dispatch, no nudges.
 import asyncio
 import logging
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, Query, WebSocket
 
-from config import LIVE_API_MODEL
+from config import ACCESS_TOKEN, LIVE_API_MODEL
 from services import brand_state
 from services.gemini_live import build_live_config, create_client
 from services.image_generator import ImageGenerator
@@ -24,8 +24,11 @@ router = APIRouter()
 
 
 @router.websocket("/ws/{session_id}")
-async def websocket_endpoint(ws: WebSocket, session_id: str):
+async def websocket_endpoint(ws: WebSocket, session_id: str, token: str = Query(default="")):
     """Main WebSocket handler — bridges frontend and Gemini Live API."""
+    if ACCESS_TOKEN and token != ACCESS_TOKEN:
+        await ws.close(code=4401)
+        return
     await ws.accept()
     logger.info(f"[{session_id}] WebSocket connected")
 
