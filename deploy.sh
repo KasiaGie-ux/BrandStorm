@@ -75,8 +75,8 @@ gcloud run deploy "$SERVICE_NAME" \
   --port=8080 \
   --cpu=2 \
   --memory=2Gi \
-  --min-instances=1 \
-  --max-instances=5 \
+  --min-instances=0 \
+  --max-instances=1 \
   --timeout=300 \
   --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION,GOOGLE_GENAI_USE_VERTEXAI=true" \
   --quiet
