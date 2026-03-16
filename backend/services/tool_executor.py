@@ -154,14 +154,9 @@ class ToolExecutor:
 
         if "name" in args and args["name"]:
             old_name = canvas.name.value
-            old_status = canvas.name.status
             canvas.name.set(args["name"], {"source": "agent"})
             fields_updated.append("name")
-            # Only emit brand_name_reveal when name is being set for the first time
-            # (was not READY before). On tagline/story updates the agent re-sends
-            # the same name — suppress the reveal card entirely.
-            if old_status != ElementStatus.READY:
-                events.append({"type": "brand_name_reveal", "name": args["name"]})
+            events.append({"type": "brand_name_reveal", "name": args["name"]})
             # User chose a name — reset flag so re-proposal works if needed
             session.names_proposed = False
             # Name changed — mark dependent elements stale
