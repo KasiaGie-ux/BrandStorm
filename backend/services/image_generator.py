@@ -34,7 +34,7 @@ ASPECT_RATIOS: dict[str, str] = {
 
 MAX_RETRIES_429 = 3
 BACKOFF_SECS = [1, 2, 4]  # backoff per retry attempt
-REQUEST_TIMEOUT_SEC = 60   # per-call timeout — prevents hanging requests from blocking the chain
+REQUEST_TIMEOUT_SEC = 60   # per-call timeout — Vertex AI image gen can take 60-80s
 
 # gemini-3-pro-image-preview requires the GLOBAL endpoint (not us-central1)
 _global_client: genai.Client | None = None
@@ -60,7 +60,9 @@ def _get_dev_client() -> genai.Client | None:
     if not GEMINI_API_KEY:
         return None
     if _dev_client is None:
-        _dev_client = genai.Client(api_key=GEMINI_API_KEY)
+        # vertexai=False forces Developer API endpoint (generativelanguage.googleapis.com)
+        # even when GOOGLE_GENAI_USE_VERTEXAI=true is set in the environment (Cloud Run).
+        _dev_client = genai.Client(api_key=GEMINI_API_KEY, vertexai=False)
     return _dev_client
 
 
@@ -245,20 +247,10 @@ class ImageGenerator:
                     return result
 
         # ------------------------------------------------------------------
-        # Step 2: Vertex AI global — fallback, 1 attempt only
+        # Step 2: Vertex AI fallback models (flash-image, flash-preview)
         # ------------------------------------------------------------------
-        result = await self._try_model(
-            session_id, _get_global_client(),
-            IMAGE_MODEL, "Nano Banana Pro (Vertex)", "global",
-            contents, asset_type, brand_name,
-            max_attempts=1,
-        )
-        if result:
-            return result
-
-        # ------------------------------------------------------------------
-        # Step 3: Vertex AI fallback models (flash-image, flash-preview)
-        # ------------------------------------------------------------------
+        # NOTE: gemini-3.1-flash-image-preview on global endpoint was removed —
+        # it consistently timed out (60s+) in Cloud Run with no successful responses.
         fallback_models = [
             (IMAGE_MODEL_FALLBACK,   "Nano Banana (fallback)"),
             (IMAGE_MODEL_FALLBACK_2, "Flash Image Gen (fallback 2)"),
