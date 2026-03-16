@@ -13,10 +13,10 @@ const DISPLAY_TYPES = [
   'name_proposals',
   'image_generated', 'tool_invoked', 'generation_complete',
   'palette_reveal', 'palette_ready', 'font_suggestion',
-  'voiceover_greeting', 'voiceover_story',
+  'voiceover_handoff', 'voiceover_greeting', 'voiceover_story',
 ];
 
-export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, onReset, imagePreview, onVoiceoverEnd, audioPlayback, brandCanvas, inputLocked }) {
+export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, onReset, imagePreview, onVoiceoverEnd, audioPlayback, brandCanvas, inputLocked, annaPlaying }) {
   const scrollRef = useRef(null);
   const [input, setInput] = useState('');
   const [showOverlay, setShowOverlay] = useState(false);
@@ -79,12 +79,12 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
     };
   }, [audioInput]);
 
-  // Stop mic immediately when input becomes locked
+  // Stop mic immediately when input becomes locked or Anna is speaking
   useEffect(() => {
-    if (inputLocked && audioInput.isRecording) {
+    if ((inputLocked || annaPlaying) && audioInput.isRecording) {
       audioInput.stop();
     }
-  }, [inputLocked, audioInput]);
+  }, [inputLocked, annaPlaying, audioInput]);
 
   const handleMicToggle = useCallback(() => {
     // Ensure AudioContext is initialized (requires user gesture)
@@ -396,7 +396,28 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
         background: `linear-gradient(to top, ${raw.cream} 60%, transparent)`,
       }}>
         <AnimatePresence>
-          {inputLocked && (
+          {annaPlaying && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              style={{ maxWidth: 640, margin: '0 auto', paddingBottom: 6 }}
+            >
+              <div style={{
+                fontSize: 11,
+                color: raw.red,
+                fontFamily: fonts.body,
+                fontWeight: 600,
+                letterSpacing: '0.06em',
+                textTransform: 'uppercase',
+              }}>
+                Anna — PR Director — is speaking
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+        <AnimatePresence>
+          {inputLocked && !annaPlaying && (
             <motion.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
@@ -450,16 +471,16 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
             type="button"
             aria-label={audioInput.isRecording ? 'Stop recording' : 'Start recording'}
             onClick={handleMicToggle}
-            title={inputLocked ? 'Input locked during generation' : audioInput.permissionDenied ? 'Microphone unavailable — type instead' : ''}
-            disabled={audioInput.permissionDenied || inputLocked}
+            title={annaPlaying ? 'Anna is speaking — mic disabled' : inputLocked ? 'Input locked during generation' : audioInput.permissionDenied ? 'Microphone unavailable — type instead' : ''}
+            disabled={audioInput.permissionDenied || inputLocked || annaPlaying}
             style={{
               width: 34, height: 34,
               border: audioInput.isRecording ? `2px solid ${raw.red}` : `2px solid ${raw.line}`,
-              cursor: (audioInput.permissionDenied || inputLocked) ? 'not-allowed' : 'pointer',
+              cursor: (audioInput.permissionDenied || inputLocked || annaPlaying) ? 'not-allowed' : 'pointer',
               background: audioInput.isRecording ? raw.red : 'transparent',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               transition: 'all 0.2s', flexShrink: 0,
-              opacity: (audioInput.permissionDenied || inputLocked) ? 0.4 : 1,
+              opacity: (audioInput.permissionDenied || inputLocked || annaPlaying) ? 0.4 : 1,
               position: 'relative',
             }}
           >
@@ -493,9 +514,9 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && !inputLocked && handleSend()}
-            placeholder={inputLocked ? 'Generating... input locked' : audioInput.isRecording ? 'Or type here...' : 'Tell the agent what you think...'}
-            disabled={inputLocked}
+            onKeyDown={(e) => e.key === 'Enter' && !inputLocked && !annaPlaying && handleSend()}
+            placeholder={annaPlaying ? 'Anna is speaking...' : inputLocked ? 'Generating... input locked' : audioInput.isRecording ? 'Or type here...' : 'Tell the agent what you think...'}
+            disabled={inputLocked || annaPlaying}
             style={{
               flex: 1, border: 'none', background: 'transparent',
               fontSize: 14, color: inputLocked ? raw.muted : raw.ink,
@@ -529,17 +550,17 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
             type="button"
             aria-label="Send message"
             onClick={handleSend}
-            disabled={!input.trim() || inputLocked}
+            disabled={!input.trim() || inputLocked || annaPlaying}
             style={{
               width: 34, height: 34, border: 'none',
-              cursor: (input.trim() && !inputLocked) ? 'pointer' : 'default',
-              background: (input.trim() && !inputLocked) ? raw.red : raw.line,
+              cursor: (input.trim() && !inputLocked && !annaPlaying) ? 'pointer' : 'default',
+              background: (input.trim() && !inputLocked && !annaPlaying) ? raw.red : raw.line,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               transition: 'background 0.2s', flexShrink: 0,
             }}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-              stroke={(input.trim() && !inputLocked) ? raw.white : raw.faint}
+              stroke={(input.trim() && !inputLocked && !annaPlaying) ? raw.white : raw.faint}
               strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
               style={{ transition: 'stroke 0.2s' }}
             >

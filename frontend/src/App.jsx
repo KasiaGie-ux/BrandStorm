@@ -55,6 +55,32 @@ export default function App() {
   // Keep screenRef in sync for use inside callbacks (avoids stale closures)
   useEffect(() => { screenRef.current = screen; }, [screen]);
 
+  // Anna (voiceover) playing state — locks mic + chat during her narration
+  useEffect(() => {
+    const onStart = () => {
+      setAnnaPlaying(true);
+      // Stop mic while Anna is speaking
+      window.dispatchEvent(new CustomEvent('query-mic-state', {
+        detail: { callback: (isRecording) => { micWasActiveRef.current = isRecording; } }
+      }));
+      window.dispatchEvent(new CustomEvent('stop-mic'));
+    };
+    const onEnd = () => {
+      setAnnaPlaying(false);
+      // Restore mic if it was active before Anna started
+      if (micWasActiveRef.current) {
+        micWasActiveRef.current = false;
+        window.dispatchEvent(new CustomEvent('resume-mic'));
+      }
+    };
+    window.addEventListener('anna-started', onStart);
+    window.addEventListener('anna-ended', onEnd);
+    return () => {
+      window.removeEventListener('anna-started', onStart);
+      window.removeEventListener('anna-ended', onEnd);
+    };
+  }, []);
+
   // processEventRef: stable ref to handleWsMessage for the event queue.
   // Set after handleWsMessage is defined (below).
   const processEventRef = useRef(null);
@@ -98,6 +124,7 @@ export default function App() {
 
   // Drag state lifted for UploadStage
   const [inputLocked, setInputLocked] = useState(false);
+  const [annaPlaying, setAnnaPlaying] = useState(false);
   const micWasActiveRef = useRef(false);
 
   // Drag state lifted for UploadStage
@@ -843,6 +870,7 @@ export default function App() {
               audioPlayback={audioPlayback}
               brandCanvas={brandCanvas}
               inputLocked={inputLocked}
+              annaPlaying={annaPlaying}
             />
           </motion.div>
         )}

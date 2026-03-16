@@ -203,11 +203,11 @@ TOOL_DECLARATIONS = types.Tool(
                 properties={
                     "handoff_text": types.Schema(
                         type=types.Type.STRING,
-                        description="Your handoff line introducing Anna (1 sentence).",
+                        description="Leave empty — do not speak before calling this tool.",
                     ),
                     "greeting_text": types.Schema(
                         type=types.Type.STRING,
-                        description="Anna's greeting intro (1-2 sentences).",
+                        description="Anna's self-introduction (1-2 sentences). She introduces herself as Anna, PR Director, then sets the scene.",
                     ),
                     "narration_text": types.Schema(
                         type=types.Type.STRING,
@@ -218,7 +218,7 @@ TOOL_DECLARATIONS = types.Tool(
                         enum=["luxury", "modern", "eco", "energetic", "gentle", "edgy"],
                     ),
                 },
-                required=["handoff_text", "narration_text", "mood"],
+                required=["narration_text", "mood"],
             ),
         ),
 

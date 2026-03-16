@@ -351,8 +351,7 @@ async def receive_loop(
                 if session.audio_url and not session.zip_url and session.brand_name:
                     finalize_nudge = (
                         "Anna's narration has finished. "
-                        "Call finalize_brand_kit now, then say ONE warm closing sentence. "
-                        "Do NOT generate another voiceover."
+                        "Ask the user: 'Ready to package everything into your brand kit?' STOP. WAIT."
                     )
                     try:
                         await live_session.send_client_content(

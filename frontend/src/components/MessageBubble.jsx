@@ -218,6 +218,8 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline, on
   }
 
   if (msg.type === 'voiceover_handoff') {
+    // Always render (even with no text/audio) — the component fires voiceover-handoff-ended
+    // which unblocks HiddenAudio and ChatVoiceoverPlayer. Invisible when text is empty.
     return <ChatHandoffText text={msg.text} audioUrl={msg.audio_url} />;
   }
 
@@ -300,9 +302,13 @@ function HiddenAudio({ audioUrl }) {
     const onEnd = () => {
       window._voiceoverGreetingDone = true;
       window.dispatchEvent(new CustomEvent('voiceover-greeting-ended'));
+      // Don't emit anna-ended here — story narration follows immediately
     };
     const onStop = () => { a.pause(); a.currentTime = 0; };
-    const startPlay = () => { a.play().catch(() => {}); };
+    const startPlay = () => {
+      window.dispatchEvent(new CustomEvent('anna-started'));
+      a.play().catch(() => {});
+    };
     a.addEventListener('ended', onEnd);
     window.addEventListener('voiceover-stop', onStop);
     // Wait for handoff audio to finish before playing greeting
@@ -351,7 +357,7 @@ function ChatHandoffText({ text, audioUrl }) {
       }}
     >
       {audioUrl && <audio ref={audioRef} src={audioUrl} preload="auto" />}
-      {text || 'Handing off to our narrator...'}
+      {text || null}
     </motion.div>
   );
 }
@@ -376,12 +382,17 @@ function ChatVoiceoverPlayer({ audioUrl, onEnded }) {
     if (!a) return;
     const onTime = () => { setCurrent(Math.floor(a.currentTime)); setProgress(a.duration ? a.currentTime / a.duration : 0); };
     const onMeta = () => setDuration(Math.floor(a.duration || 0));
-    const onEnd = () => { setPlaying(false); setProgress(0); setCurrent(0); if (onEnded) onEnded(); };
+    const onEnd = () => {
+      setPlaying(false); setProgress(0); setCurrent(0);
+      window.dispatchEvent(new CustomEvent('anna-ended'));
+      if (onEnded) onEnded();
+    };
     a.addEventListener('timeupdate', onTime);
     a.addEventListener('loadedmetadata', onMeta);
     a.addEventListener('ended', onEnd);
     // Listen for greeting audio to finish, then autoplay story
     const startPlay = () => {
+      window.dispatchEvent(new CustomEvent('anna-started'));
       a.play().then(() => setPlaying(true)).catch(() => {});
     };
     window.addEventListener('voiceover-greeting-ended', startPlay);
@@ -393,7 +404,10 @@ function ChatVoiceoverPlayer({ audioUrl, onEnded }) {
     };
     window.addEventListener('voiceover-handoff-ended', startFromHandoff);
     // Stop playback when user sends a message (barge-in)
-    const onStop = () => { a.pause(); a.currentTime = 0; setPlaying(false); setProgress(0); setCurrent(0); };
+    const onStop = () => {
+      a.pause(); a.currentTime = 0; setPlaying(false); setProgress(0); setCurrent(0);
+      window.dispatchEvent(new CustomEvent('anna-ended'));
+    };
     window.addEventListener('voiceover-stop', onStop);
     // Fallback: if nothing triggered playback after 10s, start anyway
     const fallbackTimer = setTimeout(() => {

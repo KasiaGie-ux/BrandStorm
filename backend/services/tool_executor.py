@@ -472,13 +472,14 @@ class ToolExecutor:
 
         events: list[dict] = []
 
-        # Emit handoff text event (Charon already spoke it via Live API audio)
-        if handoff_text:
-            events.append({
-                "type": "voiceover_handoff",
-                "audio_url": None,
-                "text": handoff_text,
-            })
+        # Always emit voiceover_handoff so the event queue holds it until
+        # Live API audio is done — this prevents Anna from starting while
+        # the agent is still speaking.
+        events.append({
+            "type": "voiceover_handoff",
+            "audio_url": None,
+            "text": handoff_text,  # may be empty string — ChatHandoffText handles that
+        })
 
         # Generate greeting (Anna's voice)
         if greeting_text:
@@ -519,6 +520,8 @@ class ToolExecutor:
         )
 
         session.canvas.voiceover.set(story_url, {"story": narration_text[:100], "mood": mood})
+        # Set session.audio_url so ws_receive.py voiceover_playback_done nudge fires
+        session.audio_url = story_url
 
         events.append({
             "type": "voiceover_story",
