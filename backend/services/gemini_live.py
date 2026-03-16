@@ -222,7 +222,21 @@ TOOL_DECLARATIONS = types.Tool(
             ),
         ),
 
-        # 7. FINALIZE_BRAND_KIT — package into ZIP
+        # 7. PLAY_VOICEOVER — trigger playback of already-generated voiceover
+        types.FunctionDeclaration(
+            name="play_voiceover",
+            description=(
+                "Trigger playback of the Anna voiceover that was already generated. "
+                "Call this AFTER generate_voiceover and AFTER you have spoken your handoff sentence. "
+                "This signals the frontend to start Anna's audio."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={},
+            ),
+        ),
+
+        # 8. FINALIZE_BRAND_KIT — package into ZIP
         types.FunctionDeclaration(
             name="finalize_brand_kit",
             description=(
@@ -232,34 +246,6 @@ TOOL_DECLARATIONS = types.Tool(
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={},
-            ),
-        ),
-
-        # 8. DELEGATE_TO_SPECIALIST — multi-agent interface (future)
-        types.FunctionDeclaration(
-            name="delegate_to_specialist",
-            description=(
-                "Delegate a task to a specialist agent for deeper expertise. "
-                "NOT YET AVAILABLE — will return an error. "
-                "Future specialists: marketing_advisor, color_expert, copywriter."
-            ),
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    "specialist": types.Schema(
-                        type=types.Type.STRING,
-                        enum=["marketing_advisor", "color_expert", "copywriter"],
-                    ),
-                    "task": types.Schema(
-                        type=types.Type.STRING,
-                        description="What the specialist should do.",
-                    ),
-                    "context": types.Schema(
-                        type=types.Type.STRING,
-                        description="Relevant context from the current brand kit.",
-                    ),
-                },
-                required=["specialist", "task"],
             ),
         ),
     ]
@@ -305,10 +291,10 @@ def build_live_config() -> types.LiveConnectConfig:
         realtime_input_config=types.RealtimeInputConfig(
             automatic_activity_detection=types.AutomaticActivityDetection(
                 disabled=False,
-                start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
                 end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
                 prefix_padding_ms=20,
-                silence_duration_ms=400,
+                silence_duration_ms=1200,
             ),
             turn_coverage=types.TurnCoverage.TURN_INCLUDES_ALL_INPUT,
         ),

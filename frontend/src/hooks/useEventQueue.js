@@ -22,7 +22,7 @@ const VISUAL_TYPES = new Set([
   'brand_name_reveal', 'tagline_reveal',
   'brand_story', 'brand_values', 'palette_reveal',
   'font_suggestion',
-  'voiceover_handoff', 'voiceover_greeting',
+  'voiceover_handoff', 'voiceover_greeting', 'voiceover_story', 'play_anna_voiceover',
   'tone_of_voice',
   // tool_invoked intentionally excluded — spinner must appear immediately
   // image_generated intentionally excluded — image must appear immediately when ready,

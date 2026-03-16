@@ -108,14 +108,10 @@ class ToolExecutor:
                 result, events = await self._handle_propose_names(session, args)
             elif name == "generate_voiceover":
                 result, events = await self._handle_voiceover(session, args)
+            elif name == "play_voiceover":
+                result, events = await self._handle_play_voiceover(session)
             elif name == "finalize_brand_kit":
                 result, events = await self._handle_finalize(session)
-            elif name == "delegate_to_specialist":
-                result = {
-                    "status": "error",
-                    "error": "Specialist agents are not yet available. Use your own expertise.",
-                }
-                events = []
             else:
                 result = {"status": "error", "error": f"Unknown tool: {name}"}
                 events = []
@@ -134,8 +130,13 @@ class ToolExecutor:
         # Agent sees this as part of the tool result — enforces ask-then-continue.
         # propose_names is excluded: agent must narrate names first, then wait.
         # finalize_brand_kit is excluded: no next step to ask about.
-        _no_feedback_tools = {"propose_names", "finalize_brand_kit"}
-        if name not in _no_feedback_tools and result.get("status") != "error":
+        _no_feedback_tools = {"propose_names", "finalize_brand_kit", "play_voiceover"}
+        if name == "generate_voiceover" and result.get("status") != "error":
+            result["_instruction"] = (
+                "Voiceover generated. Say ONE handoff sentence (max 8 words, e.g. 'Over to you, Anna.'). STOP. WAIT. "
+                "Your next turn: call play_voiceover immediately. Zero words."
+            )
+        elif name not in _no_feedback_tools and result.get("status") != "error":
             result["_instruction"] = (
                 "Follow the exact script for this step. "
                 "ONE sentence. ONE question. STOP."
@@ -531,6 +532,20 @@ class ToolExecutor:
 
         logger.info(f"[{session.id}] generate_voiceover | Story URL: {story_url}")
         return {"status": "success", "audio_url": story_url}, events
+
+    async def _handle_play_voiceover(
+        self, session: Session,
+    ) -> tuple[dict, list[dict]]:
+        """Signal frontend to start Anna's voiceover playback."""
+        audio_url = session.canvas.voiceover.value
+        if not audio_url:
+            logger.warning(f"[{session.id}] play_voiceover | No voiceover audio available")
+            return {"status": "skipped", "reason": "No voiceover generated yet"}, []
+
+        logger.info(f"[{session.id}] play_voiceover | Triggering playback: {audio_url}")
+        return {"status": "success"}, [
+            {"type": "play_anna_voiceover", "audio_url": audio_url},
+        ]
 
     async def _handle_finalize(
         self, session: Session,

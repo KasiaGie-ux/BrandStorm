@@ -133,11 +133,12 @@ def _resolve_next_step(session: Session) -> str | None:
             "Say max 6 words first. Then call the tool. No exceptions."
         )
 
-    # Step 18: instagram ready but voiceover missing → generate_voiceover
+    # Step 18: instagram ready but voiceover missing → ask user about Anna first
     if c.instagram.status == ready and c.voiceover.status == empty:
         return (
-            "MANDATORY: You MUST call generate_voiceover() RIGHT NOW. "
-            "Say max 6 words first. Then call the tool. No exceptions."
+            "All visuals are ready. Ask the user: "
+            "'Before we wrap up — would you like to hear a word from Anna, our PR Director?' "
+            "STOP. WAIT. Do NOT call generate_voiceover yet."
         )
 
     # Step 20: voiceover ready → finalize_brand_kit
@@ -258,7 +259,11 @@ async def receive_loop(
             elif msg_type == "audio_chunk":
                 audio_data = msg.get("data", "")
                 if audio_data:
-                    audio_bytes = base64.b64decode(audio_data)
+                    try:
+                        audio_bytes = base64.b64decode(audio_data)
+                    except Exception:
+                        logger.warning(f"[{session.id}] Malformed base64 in audio_chunk, skipping")
+                        continue
                     await live_session.send_realtime_input(
                         audio=types.Blob(data=audio_bytes, mime_type="audio/pcm;rate=16000"),
                     )
@@ -271,7 +276,20 @@ async def receive_loop(
                 if not image_data:
                     continue
 
-                image_bytes = base64.b64decode(image_data)
+                try:
+                    image_bytes = base64.b64decode(image_data)
+                except Exception:
+                    logger.warning(f"[{session.id}] Malformed base64 in image_upload, ignoring")
+                    continue
+
+                if len(image_bytes) > 10 * 1024 * 1024:
+                    logger.warning(f"[{session.id}] image_upload too large ({len(image_bytes)} bytes), ignoring")
+                    continue
+
+                if not mime_type.startswith("image/"):
+                    logger.warning(f"[{session.id}] image_upload invalid MIME type: {mime_type}, ignoring")
+                    continue
+
                 session.product_image_bytes = image_bytes
                 session.product_image_mime = mime_type
 

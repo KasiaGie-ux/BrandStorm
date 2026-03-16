@@ -16,7 +16,7 @@ const DISPLAY_TYPES = [
   'voiceover_handoff', 'voiceover_greeting', 'voiceover_story',
 ];
 
-export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, onReset, imagePreview, onVoiceoverEnd, audioPlayback, brandCanvas, inputLocked, annaPlaying }) {
+export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, onReset, imagePreview, onVoiceoverEnd, audioPlayback, brandCanvas, inputLocked, annaPlaying, showGoToSummary, voiceoverReady, onGoToSummary }) {
   const scrollRef = useRef(null);
   const [input, setInput] = useState('');
   const [showOverlay, setShowOverlay] = useState(false);
@@ -396,22 +396,43 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
         background: `linear-gradient(to top, ${raw.cream} 60%, transparent)`,
       }}>
         <AnimatePresence>
-          {annaPlaying && (
+          {showGoToSummary && (
             <motion.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
               exit={{ opacity: 0, height: 0 }}
-              style={{ maxWidth: 640, margin: '0 auto', paddingBottom: 6 }}
+              style={{ maxWidth: 640, margin: '0 auto', paddingBottom: 8 }}
             >
               <div style={{
-                fontSize: 11,
-                color: raw.red,
-                fontFamily: fonts.body,
-                fontWeight: 600,
-                letterSpacing: '0.06em',
-                textTransform: 'uppercase',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                gap: 12,
               }}>
-                Anna — PR Director — is speaking
+                {annaPlaying && (
+                  <div style={{
+                    fontSize: 11, color: raw.red, fontFamily: fonts.body,
+                    fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase',
+                  }}>
+                    Anna — PR Director — is speaking
+                  </div>
+                )}
+                <button
+                  onClick={voiceoverReady ? onGoToSummary : undefined}
+                  style={{
+                    marginLeft: 'auto',
+                    padding: '7px 16px',
+                    fontSize: 11, fontWeight: 700, letterSpacing: '0.1em',
+                    textTransform: 'uppercase', fontFamily: fonts.body,
+                    border: `2px solid ${voiceoverReady ? raw.ink : raw.line}`,
+                    background: voiceoverReady ? raw.ink : 'transparent',
+                    color: voiceoverReady ? raw.white : raw.muted,
+                    cursor: voiceoverReady ? 'pointer' : 'not-allowed',
+                    opacity: voiceoverReady ? 1 : 0.5,
+                    transition: 'all 0.2s',
+                    flexShrink: 0,
+                  }}
+                >
+                  {voiceoverReady ? 'Go to Summary →' : 'Generating…'}
+                </button>
               </div>
             </motion.div>
           )}

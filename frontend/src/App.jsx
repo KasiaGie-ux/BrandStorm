@@ -59,6 +59,7 @@ export default function App() {
   useEffect(() => {
     const onStart = () => {
       setAnnaPlaying(true);
+      setShowGoToSummary(true);
       // Stop mic while Anna is speaking
       window.dispatchEvent(new CustomEvent('query-mic-state', {
         detail: { callback: (isRecording) => { micWasActiveRef.current = isRecording; } }
@@ -67,6 +68,7 @@ export default function App() {
     };
     const onEnd = () => {
       setAnnaPlaying(false);
+      setShowGoToSummary(false);
       // Restore mic if it was active before Anna started
       if (micWasActiveRef.current) {
         micWasActiveRef.current = false;
@@ -125,6 +127,8 @@ export default function App() {
   // Drag state lifted for UploadStage
   const [inputLocked, setInputLocked] = useState(false);
   const [annaPlaying, setAnnaPlaying] = useState(false);
+  const [showGoToSummary, setShowGoToSummary] = useState(false);
+  const [voiceoverReady, setVoiceoverReady] = useState(false);
   const micWasActiveRef = useRef(false);
 
   // Drag state lifted for UploadStage
@@ -340,6 +344,14 @@ export default function App() {
       case 'canvas_update':
         // Canvas state applied on agent_turn_complete to sync with event queue flush.
         // Applying here mid-turn would hide stale messages before replacements render.
+        // Show "Go to Summary" CTA once Instagram is ready (Anna offer step)
+        if (event.canvas?.instagram?.status === 'ready') {
+          setShowGoToSummary(true);
+        }
+        // Voiceover ready from canvas (also set by voiceover_story event)
+        if (event.canvas?.voiceover?.status === 'ready') {
+          setVoiceoverReady(true);
+        }
         break;
 
       case 'agent_turn_complete':
@@ -377,6 +389,7 @@ export default function App() {
         if (event.phase) setPhase(event.phase);
         addMessage({ type: 'tool_invoked', tool: event.tool, args: event.args || {}, phase: event.phase });
         {
+
           const MIC_OFF_TOOLS = new Set(['generate_image', 'generate_voiceover', 'set_brand_identity', 'set_palette', 'set_fonts']);
           if (MIC_OFF_TOOLS.has(event.tool)) {
             micWasActiveRef.current = false;
@@ -598,8 +611,12 @@ export default function App() {
         window.dispatchEvent(new CustomEvent('voiceover-handoff-ended'));
         break;
 
+      case 'play_anna_voiceover':
+        // Agent called play_voiceover — signal all Anna audio players to start
+        window.dispatchEvent(new CustomEvent('anna-play-now'));
+        break;
+
       case 'voiceover_greeting':
-        // Anna's greeting — auto-plays before story narration
         addMessage({ type: 'voiceover_greeting', audio_url: event.audio_url, text: event.text });
         break;
 
@@ -609,6 +626,7 @@ export default function App() {
         // Anna's brand story narration — the deliverable
         setBrandKit(prev => prev ? { ...prev, audio_url: event.audio_url } : { audio_url: event.audio_url });
         hasVoiceoverRef.current = true;
+        setVoiceoverReady(true);
         setInputLocked(false);
         if (micWasActiveRef.current) {
           micWasActiveRef.current = false;
@@ -784,6 +802,19 @@ export default function App() {
     }
   }, []);
 
+  const handleGoToSummary = useCallback(() => {
+    // Stop Anna's audio immediately
+    window.dispatchEvent(new CustomEvent('voiceover-stop'));
+    setAnnaPlaying(false);
+    setShowGoToSummary(false);
+    // Mark voiceover as played so finalize can proceed
+    voiceoverPlayedRef.current = true;
+    if (wsRef.current?.sendMessage) {
+      wsRef.current.sendMessage({ type: 'voiceover_playback_done' });
+    }
+    setScreen(SCREENS.RESULTS);
+  }, []);
+
   const handleBack = useCallback(() => {
     ws.disconnect();
     setScreen(SCREENS.UPLOAD);
@@ -871,6 +902,9 @@ export default function App() {
               brandCanvas={brandCanvas}
               inputLocked={inputLocked}
               annaPlaying={annaPlaying}
+              showGoToSummary={showGoToSummary}
+              voiceoverReady={voiceoverReady}
+              onGoToSummary={handleGoToSummary}
             />
           </motion.div>
         )}

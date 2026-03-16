@@ -4,7 +4,7 @@ import logging
 import mimetypes
 import uuid
 
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
 from services import brand_state
@@ -21,12 +21,20 @@ async def health():
     return {"status": "ok", "version": "5.0", "vertex_ai": True}
 
 
+_MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
 @router.post("/upload")
 async def upload_product_image(file: UploadFile = File(...)):
     """Upload product image, create session, return session_id + image URL."""
     session_id = uuid.uuid4().hex[:12]
     image_bytes = await file.read()
     mime_type = file.content_type or "image/jpeg"
+
+    if len(image_bytes) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Image too large (max 10 MB)")
+    if not mime_type.startswith("image/"):
+        raise HTTPException(status_code=415, detail="Only image files are accepted")
 
     session = brand_state.create_session(session_id)
     session.product_image_bytes = image_bytes
@@ -65,21 +73,19 @@ async def download_zip(session_id: str):
             content={"error": "Session not found"},
         )
 
-    zip_url = None  # ZIP is created on demand
     asset_urls = session.canvas.asset_urls
     brand_name = session.canvas.name.value or "brand"
 
-    if not zip_url:
-        if asset_urls:
-            zip_url = await _storage.create_zip(
-                session_id=session_id,
-                asset_urls=asset_urls,
-            )
-        else:
-            return JSONResponse(
-                status_code=404,
-                content={"error": "No assets generated yet"},
-            )
+    if not asset_urls:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "No assets generated yet"},
+        )
+
+    zip_url = await _storage.create_zip(
+        session_id=session_id,
+        asset_urls=asset_urls,
+    )
 
     # For local storage, serve the file directly
     local_path = _storage.get_local_path(session_id, "brand_kit")

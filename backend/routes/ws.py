@@ -104,7 +104,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
                         # generate_voiceover: Anna plays after — watchdog must NOT nudge.
                         # Agent will speak after voiceover_playback_done arrives from frontend.
                         # propose_names: agent narrates names autonomously — watchdog must NOT nudge.
-                        if tool_name in ("generate_voiceover", "propose_names"):
+                        if tool_name in ("generate_voiceover", "play_voiceover", "propose_names"):
                             session.pending_tool_response = None
                             logger.info(f"[{session_id}] Watchdog skipped for {tool_name}")
                             continue

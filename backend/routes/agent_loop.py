@@ -101,9 +101,9 @@ async def agent_loop(
                             session.add_transcript("user", text.strip())
                             await send_json(ws, {"type": "user_voice_text", "text": text.strip()})
 
-                            # Detect voice name selection — same logic as receive_loop text input
+                            # Detect voice name selection — update canvas state so receive_loop
+                            # picks it up on the next user affirmation turn.
                             from routes.receive_loop import _detect_name_choice
-                            from services.context_injector import build_context_message
                             if session.proposed_names and session.canvas.name.status != "ready":
                                 chosen = _detect_name_choice(text.strip(), session.proposed_names)
                                 if chosen:
@@ -111,25 +111,6 @@ async def agent_loop(
                                     session.proposed_names = []
                                     session.pending_tool_response = None
                                     logger.info(f"[{session.id}] Voice name selected: '{chosen}' (from: '{text.strip()}')")
-                                    ctx = build_context_message(
-                                        session,
-                                        trigger="name_selected",
-                                        details=(
-                                            f"User chose the brand name: '{chosen}'.\n"
-                                            f"Say ONE confident sentence about why this name fits — reference the product visuals.\n"
-                                            f"Then ask: 'Should I build out the full brand identity?' STOP. Do NOT call any tools yet."
-                                        ),
-                                    )
-                                    try:
-                                        await live_session.send_client_content(
-                                            turns=[types.Content(
-                                                role="user",
-                                                parts=[types.Part.from_text(text=ctx)],
-                                            )],
-                                            turn_complete=True,
-                                        )
-                                    except Exception as e:
-                                        logger.warning(f"[{session.id}] name_selected inject failed: {e}")
 
                     # Output transcription (agent speech)
                     if getattr(sc, "output_transcription", None):
