@@ -2,46 +2,28 @@ import { useRef, useCallback, useState } from 'react';
 
 /**
  * useAudioInput — captures microphone audio as PCM 16-bit 16kHz mono
- * and sends chunks via a callback every ~250ms.
+ * and sends chunks via a callback every ~256ms (4096 samples).
  *
- * Uses ScriptProcessorNode (deprecated but universally supported)
- * to get raw PCM. AudioWorklet would be cleaner but requires a
- * separate worker file — overkill for a hackathon.
+ * Uses AudioWorklet (dedicated audio thread) to avoid frame drops
+ * caused by React rendering on the main thread. Matches Google's
+ * official Gemini Live API demo configuration.
  *
  * Usage:
  *   const { start, stop, isRecording, permissionDenied } = useAudioInput({ onChunk });
- *   // onChunk(base64PcmData) called every ~250ms while recording
+ *   // onChunk(base64PcmData) called every ~256ms while recording
  */
 
-// Silence detection disabled — mic stays on until user toggles it off.
-// Live API handles barge-in natively; no need to auto-stop.
-const SILENCE_THRESHOLD = 0.005; // kept for potential future VAD use
 const TARGET_SAMPLE_RATE = 16000;
 
-export default function useAudioInput({ onChunk, onSilenceTimeout }) {
+export default function useAudioInput({ onChunk }) {
   const [isRecording, setIsRecording] = useState(false);
   const [permissionDenied, setPermissionDenied] = useState(false);
 
   const streamRef = useRef(null);
   const ctxRef = useRef(null);
-  const processorRef = useRef(null);
+  const workletNodeRef = useRef(null);
   const sourceRef = useRef(null);
-  const silenceTimerRef = useRef(null);
   const recordingRef = useRef(false);
-  const accumulatedChunksRef = useRef([]);
-  const accumulatedLengthRef = useRef(0);
-
-  /** Downsample from source rate to 16kHz. */
-  const downsample = useCallback((float32Array, fromRate) => {
-    if (fromRate === TARGET_SAMPLE_RATE) return float32Array;
-    const ratio = fromRate / TARGET_SAMPLE_RATE;
-    const newLength = Math.floor(float32Array.length / ratio);
-    const result = new Float32Array(newLength);
-    for (let i = 0; i < newLength; i++) {
-      result[i] = float32Array[Math.floor(i * ratio)];
-    }
-    return result;
-  }, []);
 
   /** Convert Float32Array to base64-encoded PCM 16-bit LE. */
   const float32ToPcm16Base64 = useCallback((float32) => {
@@ -49,7 +31,8 @@ export default function useAudioInput({ onChunk, onSilenceTimeout }) {
     const view = new DataView(buffer);
     for (let i = 0; i < float32.length; i++) {
       const s = Math.max(-1, Math.min(1, float32[i]));
-      view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+      // Symmetric clipping — matches Google's official demo
+      view.setInt16(i * 2, Math.max(-32768, Math.min(32767, s * 0x7FFF)), true);
     }
     const bytes = new Uint8Array(buffer);
     let binary = '';
@@ -58,9 +41,6 @@ export default function useAudioInput({ onChunk, onSilenceTimeout }) {
     }
     return btoa(binary);
   }, []);
-
-  // No-op: silence timer disabled — mic stays always on
-  const resetSilenceTimer = useCallback(() => {}, []);
 
   const start = useCallback(async () => {
     if (recordingRef.current) return;
@@ -73,103 +53,54 @@ export default function useAudioInput({ onChunk, onSilenceTimeout }) {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
-          // Prefer a clean, high-quality mic capture
-          googEchoCancellation: true,
-          googNoiseSuppression: true,
-          googHighpassFilter: true,
-          googAutoGainControl: true,
         },
       });
 
       streamRef.current = stream;
       setPermissionDenied(false);
 
-      // Request 16kHz context directly — avoids resampling artifacts when possible
       const ctx = new (window.AudioContext || window.webkitAudioContext)({
         sampleRate: TARGET_SAMPLE_RATE,
       });
       ctxRef.current = ctx;
 
+      // Load AudioWorklet processor (served from /public/)
+      await ctx.audioWorklet.addModule('/audio-capture.worklet.js');
+
+      const workletNode = new AudioWorkletNode(ctx, 'audio-capture-processor');
+      workletNodeRef.current = workletNode;
+
+      workletNode.port.onmessage = (e) => {
+        if (!recordingRef.current) return;
+        const base64 = float32ToPcm16Base64(e.data);
+        onChunk?.(base64);
+      };
+
       const source = ctx.createMediaStreamSource(stream);
       sourceRef.current = source;
 
-      // 2048-sample buffer for tighter latency (~128ms at 16kHz)
-      const processor = ctx.createScriptProcessor(2048, 1, 1);
-      processorRef.current = processor;
-
-      accumulatedChunksRef.current = [];
-      accumulatedLengthRef.current = 0;
-      // Send ~100ms chunks — good balance for Live API responsiveness
-      const TARGET_CHUNK_SAMPLES = Math.floor(TARGET_SAMPLE_RATE * 0.1);
-
-      processor.onaudioprocess = (e) => {
-        if (!recordingRef.current) return;
-
-        const input = e.inputBuffer.getChannelData(0);
-        const downsampled = downsample(new Float32Array(input), ctx.sampleRate);
-        accumulatedChunksRef.current.push(downsampled);
-        accumulatedLengthRef.current += downsampled.length;
-
-        // Check for silence
-        let rms = 0;
-        for (let i = 0; i < downsampled.length; i++) {
-          rms += downsampled[i] * downsampled[i];
-        }
-        rms = Math.sqrt(rms / downsampled.length);
-
-        if (rms > SILENCE_THRESHOLD) {
-          resetSilenceTimer();
-        }
-
-        if (accumulatedLengthRef.current >= TARGET_CHUNK_SAMPLES) {
-          const samples = new Float32Array(accumulatedLengthRef.current);
-          let offset = 0;
-          for (const chunk of accumulatedChunksRef.current) {
-            samples.set(chunk, offset);
-            offset += chunk.length;
-          }
-          accumulatedChunksRef.current = [];
-          accumulatedLengthRef.current = 0;
-          const base64 = float32ToPcm16Base64(samples);
-          onChunk?.(base64);
-        }
-      };
-
-      source.connect(processor);
-      processor.connect(ctx.destination); // required for onaudioprocess to fire
+      source.connect(workletNode);
+      // Do NOT connect workletNode to destination — avoids mic feedback
 
       recordingRef.current = true;
       setIsRecording(true);
-      resetSilenceTimer();
     } catch (e) {
-      // Microphone access failed — handle gracefully
       if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
         setPermissionDenied(true);
+      } else {
+        console.error('[useAudioInput] Failed to start:', e);
       }
     }
-  }, [onChunk, downsample, float32ToPcm16Base64, resetSilenceTimer]);
+  }, [onChunk, float32ToPcm16Base64]);
 
   const stop = useCallback(() => {
     recordingRef.current = false;
     setIsRecording(false);
 
-    // Flush any remaining accumulated samples before closing
-    if (accumulatedLengthRef.current > 0 && onChunk) {
-      const samples = new Float32Array(accumulatedLengthRef.current);
-      let offset = 0;
-      for (const chunk of accumulatedChunksRef.current) {
-        samples.set(chunk, offset);
-        offset += chunk.length;
-      }
-      accumulatedChunksRef.current = [];
-      accumulatedLengthRef.current = 0;
-      const base64 = float32ToPcm16Base64(samples);
-      onChunk(base64);
-    }
-
-    if (processorRef.current) {
-      processorRef.current.disconnect();
-      processorRef.current = null;
+    if (workletNodeRef.current) {
+      workletNodeRef.current.port.onmessage = null;
+      workletNodeRef.current.disconnect();
+      workletNodeRef.current = null;
     }
     if (sourceRef.current) {
       sourceRef.current.disconnect();
