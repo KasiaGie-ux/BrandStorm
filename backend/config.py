@@ -1,5 +1,4 @@
 """Configuration — all settings from environment variables."""
-import logging
 import os
 
 # GCP
@@ -46,9 +45,3 @@ ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "")
 PORT = int(os.getenv("PORT", "8080"))
 HOST = os.getenv("HOST", "0.0.0.0")
 
-# Logging — DEBUG locally, WARNING in production
-LOG_LEVEL = os.getenv("LOG_LEVEL", "WARNING")
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL.upper(), logging.WARNING),
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)

@@ -92,6 +92,7 @@ class ToolExecutor:
             args = {}
 
         t0 = time.perf_counter()
+        logger.info(f"[{session.id}] Tool: {name} | Args: {list(args.keys())}")
 
         try:
             if name == "set_brand_identity":
@@ -117,6 +118,10 @@ class ToolExecutor:
             events = []
 
         latency = (time.perf_counter() - t0) * 1000
+        logger.info(
+            f"[{session.id}] Tool: {name} | Latency: {latency:.0f}ms | "
+            f"Status: {result.get('status', 'unknown')}"
+        )
 
         # Inject feedback instruction into every tool response.
         # Agent sees this as part of the tool result — enforces ask-then-continue.
@@ -156,7 +161,10 @@ class ToolExecutor:
             old_name = canvas.name.value
             canvas.name.set(args["name"], {"source": "agent"})
             fields_updated.append("name")
-            events.append({"type": "brand_name_reveal", "name": args["name"]})
+            # Emit brand_name_reveal only when frontend hasn't seen this name yet
+            if session.revealed_brand_name != args["name"]:
+                events.append({"type": "brand_name_reveal", "name": args["name"]})
+                session.revealed_brand_name = args["name"]
             # User chose a name — reset flag so re-proposal works if needed
             session.names_proposed = False
             # Name changed — mark dependent elements stale

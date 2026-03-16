@@ -288,7 +288,7 @@ async def receive_loop(
                 session.product_image_bytes = image_bytes
                 session.product_image_mime = mime_type
 
-                logger.debug(
+                logger.info(
                     f"[{session.id}] Image upload | Size: {len(image_bytes)} bytes | "
                     f"MIME: {mime_type}"
                 )
@@ -300,16 +300,27 @@ async def receive_loop(
                             else "User uploaded a product image. CRITICAL: Execute your OPENING SEQUENCE now. Then STOP immediately.",
                 )
 
-                # Send image + context to Live API
+                # Send image first, then context text as a separate turn.
+                # Live API ignores combined image+text turns silently — two sends required.
                 session.opening_awaiting_response = True
                 image_part = image_bytes_to_part(image_bytes, mime_type)
+                logger.info(f"[{session.id}] Sending image to Live API")
                 await live_session.send_client_content(
                     turns=[types.Content(
                         role="user",
-                        parts=[image_part, types.Part.from_text(text=canvas_context)],
+                        parts=[image_part],
+                    )],
+                    turn_complete=False,
+                )
+                logger.info(f"[{session.id}] Sending context to Live API")
+                await live_session.send_client_content(
+                    turns=[types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=canvas_context)],
                     )],
                     turn_complete=True,
                 )
+                logger.info(f"[{session.id}] Image + context sent to Live API — awaiting opening response")
 
             elif msg_type == "go_to_summary":
                 context = build_context_message(

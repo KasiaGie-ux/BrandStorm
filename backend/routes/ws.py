@@ -35,7 +35,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str, token: str = Query(
         await ws.close(code=4401)
         return
     await ws.accept()
-    logger.debug(f"[{session_id}] WebSocket connected")
+    logger.info(f"[{session_id}] WebSocket connected")
 
     session = brand_state.create_session(session_id)
     stop_event = brand_state.register_teardown_event(session_id)
@@ -47,13 +47,13 @@ async def websocket_endpoint(ws: WebSocket, session_id: str, token: str = Query(
 
     try:
         live_config = build_live_config()
-        logger.debug(f"[{session_id}] Connecting to Live API | Model: {LIVE_API_MODEL}")
+        logger.info(f"[{session_id}] Connecting to Live API | Model: {LIVE_API_MODEL}")
 
         async with client.aio.live.connect(
             model=LIVE_API_MODEL,
             config=live_config,
         ) as live_session:
-            logger.debug(f"[{session_id}] Live API connected")
+            logger.info(f"[{session_id}] Live API connected")
 
             # Settle delay — Live API needs time before it can generate audio
             # on the first turn. Without this, the first send_client_content may
@@ -64,6 +64,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str, token: str = Query(
             _has_served_session = True
             await asyncio.sleep(settle)
 
+            logger.info(f"[{session_id}] Sending session_ready to frontend (settle={settle}s)")
             await send_json(ws, {"type": "session_ready"})
 
             async def keepalive_loop():
@@ -199,4 +200,4 @@ async def websocket_endpoint(ws: WebSocket, session_id: str, token: str = Query(
                 logger.debug(f"[{session_id}] Cancelled background task: {task_name}")
         brand_state.clear_teardown_event(session_id, stop_event)
         brand_state.remove_session(session_id)
-        logger.debug(f"[{session_id}] Session ended")
+        logger.info(f"[{session_id}] Session ended")

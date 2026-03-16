@@ -5,6 +5,8 @@ import { raw, fonts, easeCurve } from '../styles/tokens';
 export function stripMarkdown(text) {
   if (!text) return '';
   let s = text;
+  // Strip HTML button tags (agent may output these; they are non-functional here)
+  s = s.replace(/<button[^>]*>[\s\S]*?<\/button>/gi, '');
   // Strip structured tags [TAG]...[/TAG] — these are parsed by backend, not for display
   s = s.replace(/\[([A-Z_]+)\][\s\S]*?\[\/\1\]/g, '');
   // Strip any orphaned opening/closing tags that didn't match

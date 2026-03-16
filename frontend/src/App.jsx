@@ -317,7 +317,6 @@ export default function App() {
           if (acc.trim()) setFirstAgentText(acc);
           break; // first turn never goes to chat
         }
-
         // --- Normal turns (> first turn) ---
         setPhase(p => p === 'INIT' || p === 'ANALYZING' ? 'PROPOSING' : p);
         turnActiveRef.current = true;
@@ -453,7 +452,17 @@ export default function App() {
       }
 
       case 'brand_name_reveal':
-        addMessage({ type: 'brand_name_reveal', name: event.name, rationale: event.rationale });
+        // Replace existing brand_name_reveal in place (like tagline_reveal)
+        setMessages(prev => {
+          const idx = prev.findLastIndex(m => m.type === 'brand_name_reveal');
+          if (idx !== -1) {
+            const next = [...prev];
+            next[idx] = { ...prev[idx], name: event.name, rationale: event.rationale };
+            messagesRef.current = next;
+            return next;
+          }
+          return [...prev, { type: 'brand_name_reveal', name: event.name, rationale: event.rationale, _id: ++msgIdCounter.current }];
+        });
         break;
 
       case 'brand_name_reveal_rationale':

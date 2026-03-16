@@ -71,7 +71,7 @@ async def agent_loop(
 
         while True:
             async for message in live_session.receive():
-                logger.debug(f"[{session.id}] Live API message | sc={bool(message.server_content)} tool={bool(message.tool_call)} setup={bool(getattr(message, 'setup_complete', None))}")
+                logger.info(f"[{session.id}] Live API message | sc={bool(message.server_content)} tool={bool(message.tool_call)} setup={bool(getattr(message, 'setup_complete', None))}")
                 # -- Server content: audio, text, transcription --
                 if message.server_content:
                     sc = message.server_content
@@ -92,7 +92,7 @@ async def agent_loop(
                     # Log full output_transcription object for inspection
                     out_tx_obj = getattr(sc, "output_transcription", None)
                     out_tx_text = repr(getattr(out_tx_obj, "text", None)[:80]) if out_tx_obj and getattr(out_tx_obj, "text", None) else repr(getattr(out_tx_obj, "text", None))
-                    logger.debug(
+                    logger.info(
                         f"[{session.id}] sc detail | model_turn={has_model_turn} parts={n_parts} "
                         f"types={part_types} input_tx={has_input_tx} output_tx={has_output_tx} "
                         f"out_tx_text={out_tx_text} turn_complete={turn_complete} "
@@ -101,6 +101,12 @@ async def agent_loop(
 
                     # Barge-in: agent was interrupted by user
                     if interrupted:
+                        # If interrupted before agent produced any opening audio/text
+                        # (canvas still empty = agent never started), re-arm the opening
+                        # flag so the next turn_complete triggers another retry.
+                        if not session.opening_awaiting_response and session.canvas.ready_count == 0:
+                            logger.warning(f"[{session.id}] Interrupted during opening — re-arming retry")
+                            session.opening_awaiting_response = True
                         await send_json(ws, {"type": "agent_audio_interrupted"})
                         continue
 
@@ -142,7 +148,7 @@ async def agent_loop(
                     if getattr(sc, "output_transcription", None):
                         text = getattr(sc.output_transcription, "text", "")
                         finished = getattr(sc.output_transcription, "finished", None)
-                        logger.debug(f"[{session.id}] output_tx | text={repr(text[:60]) if text else repr(text)} finished={finished}")
+                        logger.info(f"[{session.id}] output_tx | text={repr(text[:60]) if text else repr(text)} finished={finished}")
                         if text:
                             session.opening_awaiting_response = False
                         if text and not session.finalize_in_progress:
@@ -160,6 +166,7 @@ async def agent_loop(
 
                     # Turn complete — always send agent_turn_complete
                     if getattr(sc, "turn_complete", False):
+                        logger.info(f"[{session.id}] turn_complete | opening_awaiting={session.opening_awaiting_response}")
                         if idle_keepalive_task and not idle_keepalive_task.done():
                             idle_keepalive_task.cancel()
                             idle_keepalive_task = None
@@ -208,6 +215,7 @@ async def agent_loop(
                     all_responses = []
                     all_events = []
                     tool_names = []
+                    logger.info(f"[{session.id}] Tool call from agent | Tools: {[fc.name for fc in message.tool_call.function_calls]}")
 
                     for fc in message.tool_call.function_calls:
                         await send_json(ws, {

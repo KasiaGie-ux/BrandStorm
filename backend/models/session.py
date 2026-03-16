@@ -52,6 +52,10 @@ class Session:
     # while user is still deciding between the presented names.
     names_proposed: bool = False
 
+    # Tracks the name value that was last sent as brand_name_reveal to the frontend.
+    # None = not yet revealed. Used to decide when to re-emit the event.
+    revealed_brand_name: str | None = None
+
     # Names currently on offer — used to detect voice-spoken selection.
     proposed_names: list[str] = field(default_factory=list)
 

@@ -66,10 +66,9 @@ def _get_dev_client() -> genai.Client | None:
 
 # ---------------------------------------------------------------------------
 # Generation chain — ordered priority:
-#   Step 1: Vertex AI global — primary model (1 attempt, no retry)
-#   Step 2: Developer API (api_key) — same primary model (up to MAX_RETRIES_429)
+#   Step 1: Developer API (api_key) — primary model (up to MAX_RETRIES_429)
+#   Step 2: Vertex AI global — fallback (1 attempt, no retry)
 #   Step 3: Vertex AI fallback models (up to MAX_RETRIES_429 each)
-# Worst case: 1 + 4 + 4 + 4 = 13 attempts  (was 20 before)
 # ---------------------------------------------------------------------------
 
 
@@ -179,8 +178,8 @@ class ImageGenerator:
         """Generate an image asset. Returns dict with status, image_data, etc.
 
         Chain order:
-          1. Vertex AI global  — primary model, **1 attempt only**
-          2. Developer API     — primary model, up to MAX_RETRIES_429 retries
+          1. Developer API     — primary model, up to MAX_RETRIES_429 retries
+          2. Vertex AI global  — fallback, **1 attempt only**
           3. Vertex AI         — fallback models, up to MAX_RETRIES_429 retries each
         """
         ratio = aspect_ratio or ASPECT_RATIOS.get(asset_type, "1:1")
@@ -231,21 +230,9 @@ class ImageGenerator:
                 }
 
         # ------------------------------------------------------------------
-        # Step 1: Vertex AI global — primary model, 1 attempt only
+        # Step 1: Developer API (api_key) — primary, retries
         # ------------------------------------------------------------------
-        result = await self._try_model(
-            session_id, _get_global_client(),
-            IMAGE_MODEL, "Nano Banana Pro (Vertex)", "global",
-            contents, asset_type, brand_name,
-            max_attempts=1,
-        )
-        if result:
-            return result
-
-        # ------------------------------------------------------------------
-        # Step 2: Developer API (api_key) — same primary model, retries
-        # ------------------------------------------------------------------
-        if USE_DEVELOPER_API_FALLBACK and GEMINI_API_KEY:
+        if GEMINI_API_KEY:
             dev_client = _get_dev_client()
             if dev_client:
                 result = await self._try_model(
@@ -256,6 +243,18 @@ class ImageGenerator:
                 )
                 if result:
                     return result
+
+        # ------------------------------------------------------------------
+        # Step 2: Vertex AI global — fallback, 1 attempt only
+        # ------------------------------------------------------------------
+        result = await self._try_model(
+            session_id, _get_global_client(),
+            IMAGE_MODEL, "Nano Banana Pro (Vertex)", "global",
+            contents, asset_type, brand_name,
+            max_attempts=1,
+        )
+        if result:
+            return result
 
         # ------------------------------------------------------------------
         # Step 3: Vertex AI fallback models (flash-image, flash-preview)
