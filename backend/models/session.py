@@ -44,6 +44,10 @@ class Session:
     # Used by the post-tool nudge to detect agent getting stuck after a tool.
     pending_tool_response: list[str] | None = None
 
+    # Set when finalize_brand_kit is called — suppresses second agent speech turn
+    # that Live API generates after the tool result (agent already spoke before tool call).
+    finalize_in_progress: bool = False
+
     # True once propose_names has been called — prevents re-proposing on affirmations
     # while user is still deciding between the presented names.
     names_proposed: bool = False

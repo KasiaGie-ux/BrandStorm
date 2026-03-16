@@ -141,12 +141,7 @@ def _resolve_next_step(session: Session) -> str | None:
             "STOP. WAIT. Do NOT call generate_voiceover yet."
         )
 
-    # Step 20: voiceover ready → finalize_brand_kit
-    if c.voiceover.status == ready:
-        return (
-            "MANDATORY: You MUST call finalize_brand_kit() RIGHT NOW. "
-            "Say max 6 words first. Then call the tool. No exceptions."
-        )
+    # finalize_brand_kit is triggered by go_to_summary (user action), not automatically
 
     return None
 
@@ -315,11 +310,15 @@ async def receive_loop(
                     turn_complete=True,
                 )
 
-            elif msg_type == "voiceover_playback_done":
+            elif msg_type == "go_to_summary":
                 context = build_context_message(
                     session,
-                    trigger="voiceover_playback_complete",
-                    details="The brand story narration has finished playing. You may finalize the brand kit.",
+                    trigger="go_to_summary",
+                    details=(
+                        "TRIGGER = go_to_summary. "
+                        "Say 1-2 warm sentences summarising the brand. "
+                        "Then immediately call finalize_brand_kit. STOP."
+                    ),
                 )
                 await live_session.send_client_content(
                     turns=[types.Content(

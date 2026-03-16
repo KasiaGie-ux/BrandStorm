@@ -191,27 +191,19 @@ TOOL_DECLARATIONS = types.Tool(
             ),
         ),
 
-        # 6. GENERATE_VOICEOVER — dual-voice brand story narration
+        # 6. GENERATE_VOICEOVER — brand story narration by Anna
         types.FunctionDeclaration(
             name="generate_voiceover",
             description=(
-                "Generate brand story voiceover with two voices. "
-                "Call after visual assets are ready, before finalize."
+                "Generate brand story narration audio (Anna's voice). "
+                "Call silently after user says yes to Anna."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
-                    "handoff_text": types.Schema(
-                        type=types.Type.STRING,
-                        description="Leave empty — do not speak before calling this tool.",
-                    ),
-                    "greeting_text": types.Schema(
-                        type=types.Type.STRING,
-                        description="Anna's self-introduction (1-2 sentences). She introduces herself as Anna, PR Director, then sets the scene.",
-                    ),
                     "narration_text": types.Schema(
                         type=types.Type.STRING,
-                        description="Anna's full brand story narration.",
+                        description="The full brand story narration text.",
                     ),
                     "mood": types.Schema(
                         type=types.Type.STRING,
@@ -222,21 +214,7 @@ TOOL_DECLARATIONS = types.Tool(
             ),
         ),
 
-        # 7. PLAY_VOICEOVER — trigger playback of already-generated voiceover
-        types.FunctionDeclaration(
-            name="play_voiceover",
-            description=(
-                "Trigger playback of the Anna voiceover that was already generated. "
-                "Call this AFTER generate_voiceover and AFTER you have spoken your handoff sentence. "
-                "This signals the frontend to start Anna's audio."
-            ),
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={},
-            ),
-        ),
-
-        # 8. FINALIZE_BRAND_KIT — package into ZIP
+        # 7. FINALIZE_BRAND_KIT — package into ZIP
         types.FunctionDeclaration(
             name="finalize_brand_kit",
             description=(

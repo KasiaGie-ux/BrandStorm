@@ -13,7 +13,7 @@ const DISPLAY_TYPES = [
   'name_proposals',
   'image_generated', 'tool_invoked', 'generation_complete',
   'palette_reveal', 'palette_ready', 'font_suggestion',
-  'voiceover_handoff', 'voiceover_greeting', 'voiceover_story',
+  'voiceover_story',
 ];
 
 export default function StudioScreen({ messages, phase, sendMessage, onBack, onStop, onReset, imagePreview, onVoiceoverEnd, audioPlayback, brandCanvas, inputLocked, annaPlaying, showGoToSummary, voiceoverReady, onGoToSummary }) {
@@ -396,7 +396,7 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
         background: `linear-gradient(to top, ${raw.cream} 60%, transparent)`,
       }}>
         <AnimatePresence>
-          {showGoToSummary && (
+          {showGoToSummary && voiceoverReady && (
             <motion.div
               initial={{ opacity: 0, height: 0 }}
               animate={{ opacity: 1, height: 'auto' }}
@@ -416,22 +416,21 @@ export default function StudioScreen({ messages, phase, sendMessage, onBack, onS
                   </div>
                 )}
                 <button
-                  onClick={voiceoverReady ? onGoToSummary : undefined}
+                  onClick={onGoToSummary}
                   style={{
                     marginLeft: 'auto',
                     padding: '7px 16px',
                     fontSize: 11, fontWeight: 700, letterSpacing: '0.1em',
                     textTransform: 'uppercase', fontFamily: fonts.body,
-                    border: `2px solid ${voiceoverReady ? raw.ink : raw.line}`,
-                    background: voiceoverReady ? raw.ink : 'transparent',
-                    color: voiceoverReady ? raw.white : raw.muted,
-                    cursor: voiceoverReady ? 'pointer' : 'not-allowed',
-                    opacity: voiceoverReady ? 1 : 0.5,
-                    transition: 'all 0.2s',
+                    border: `2px solid ${raw.ink}`,
+                    background: raw.ink,
+                    color: raw.white,
+                    cursor: 'pointer',
+                    transition: 'opacity 0.2s',
                     flexShrink: 0,
                   }}
                 >
-                  {voiceoverReady ? 'Go to Summary →' : 'Generating…'}
+                  Go to Summary →
                 </button>
               </div>
             </motion.div>

@@ -217,21 +217,13 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline, on
     );
   }
 
-  if (msg.type === 'voiceover_handoff') {
-    // Always render (even with no text/audio) — the component fires voiceover-handoff-ended
-    // which unblocks HiddenAudio and ChatVoiceoverPlayer. Invisible when text is empty.
-    return <ChatHandoffText text={msg.text} audioUrl={msg.audio_url} />;
-  }
-
-  if (msg.type === 'voiceover_greeting') {
-    return msg.audio_url ? <AnnaGreetingAudio audioUrl={msg.audio_url} /> : null;
-  }
-
   if (msg.type === 'voiceover_story' && msg.audio_url) {
-    return <ChatVoiceoverPlayer audioUrl={msg.audio_url} onEnded={onVoiceoverEnd} />;
+    return <BrandStoryPlayer audioUrl={msg.audio_url} onEnded={onVoiceoverEnd} />;
   }
 
   if (msg.type === 'tool_invoked') {
+    // No spinner for voiceover — player appears right after and makes this redundant
+    if (msg.tool === 'generate_voiceover') return null;
     return (
       <motion.div
         initial={{ opacity: 0 }}
@@ -289,74 +281,9 @@ export default function MessageBubble({ msg, sendMessage, brandName, tagline, on
   return null;
 }
 
-function AnnaGreetingAudio({ audioUrl }) {
-  // Hidden auto-play greeting — fires before story narration, no visible controls
+function BrandStoryPlayer({ audioUrl, onEnded }) {
   const audioRef = useRef(null);
-
-  useEffect(() => {
-    const a = audioRef.current;
-    if (!a) return;
-    const onEnd = () => window.dispatchEvent(new CustomEvent('anna-greeting-ended'));
-    const onStop = () => { a.pause(); a.currentTime = 0; };
-    const onPlayNow = () => {
-      window.dispatchEvent(new CustomEvent('anna-started'));
-      a.play().catch(() => {
-        // Autoplay blocked — skip greeting, let story start directly
-        window.dispatchEvent(new CustomEvent('anna-greeting-ended'));
-      });
-    };
-    a.addEventListener('ended', onEnd);
-    window.addEventListener('voiceover-stop', onStop);
-    window.addEventListener('anna-play-now', onPlayNow);
-    return () => {
-      a.removeEventListener('ended', onEnd);
-      window.removeEventListener('voiceover-stop', onStop);
-      window.removeEventListener('anna-play-now', onPlayNow);
-    };
-  }, []);
-
-  return <audio ref={audioRef} src={audioUrl} preload="auto" style={{ display: 'none' }} />;
-}
-
-function ChatHandoffText({ text, audioUrl }) {
-  const audioRef = useRef(null);
-
-  useEffect(() => {
-    if (!audioUrl) {
-      // No handoff TTS — agent already said this via Live API.
-      // Set flag so HiddenAudio can check it synchronously on mount.
-      window._voiceoverHandoffDone = true;
-      window.dispatchEvent(new CustomEvent('voiceover-handoff-ended'));
-      return;
-    }
-    const a = audioRef.current;
-    if (!a) return;
-    const onEnd = () => window.dispatchEvent(new CustomEvent('voiceover-handoff-ended'));
-    const onStop = () => { a.pause(); a.currentTime = 0; };
-    a.addEventListener('ended', onEnd);
-    window.addEventListener('voiceover-stop', onStop);
-    a.play().catch(() => {});
-    return () => { a.removeEventListener('ended', onEnd); window.removeEventListener('voiceover-stop', onStop); };
-  }, [audioUrl]);
-
-  return (
-    <motion.div
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, ease: easeCurve }}
-      style={{
-        fontSize: 15, lineHeight: 1.65, color: raw.ink,
-        fontFamily: fonts.body, padding: '4px 0',
-      }}
-    >
-      {audioUrl && <audio ref={audioRef} src={audioUrl} preload="auto" />}
-      {text || null}
-    </motion.div>
-  );
-}
-
-function ChatVoiceoverPlayer({ audioUrl, onEnded }) {
-  const audioRef = useRef(null);
+  const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [currentTime, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -366,7 +293,10 @@ function ChatVoiceoverPlayer({ audioUrl, onEnded }) {
   useEffect(() => {
     const a = audioRef.current;
     if (!a) return;
-    const onTime = () => { setCurrent(Math.floor(a.currentTime)); setProgress(a.duration ? a.currentTime / a.duration : 0); };
+    const onTime = () => {
+      setCurrent(Math.floor(a.currentTime));
+      setProgress(a.duration ? a.currentTime / a.duration : 0);
+    };
     const onMeta = () => setDuration(Math.floor(a.duration || 0));
     const onEnd = () => {
       setPlaying(false); setProgress(0); setCurrent(0);
@@ -375,36 +305,30 @@ function ChatVoiceoverPlayer({ audioUrl, onEnded }) {
     };
     const onStop = () => {
       a.pause(); a.currentTime = 0; setPlaying(false); setProgress(0); setCurrent(0);
-      window.dispatchEvent(new CustomEvent('anna-ended'));
-    };
-    const startStory = () => {
-      // Only start if not already playing (prevents double-trigger)
-      if (!a.paused) return;
-      window.dispatchEvent(new CustomEvent('anna-started'));
-      a.play().then(() => setPlaying(true)).catch(() => {});
-    };
-    // Start after greeting finishes
-    const onGreetingEnded = () => startStory();
-    // Start directly if no greeting exists (anna-play-now with no greeting player present)
-    const onPlayNow = () => {
-      // Small delay to let greeting player claim anna-play-now first
-      setTimeout(() => { if (a.paused) startStory(); }, 100);
     };
     a.addEventListener('timeupdate', onTime);
     a.addEventListener('loadedmetadata', onMeta);
     a.addEventListener('ended', onEnd);
     window.addEventListener('voiceover-stop', onStop);
-    window.addEventListener('anna-greeting-ended', onGreetingEnded);
-    window.addEventListener('anna-play-now', onPlayNow);
     return () => {
-      window.removeEventListener('voiceover-stop', onStop);
-      window.removeEventListener('anna-greeting-ended', onGreetingEnded);
-      window.removeEventListener('anna-play-now', onPlayNow);
       a.removeEventListener('timeupdate', onTime);
       a.removeEventListener('loadedmetadata', onMeta);
       a.removeEventListener('ended', onEnd);
+      window.removeEventListener('voiceover-stop', onStop);
     };
-  }, []);
+  }, [onEnded]);
+
+  const toggle = () => {
+    const a = audioRef.current;
+    if (!a) return;
+    if (playing) {
+      a.pause();
+      setPlaying(false);
+    } else {
+      window.dispatchEvent(new CustomEvent('anna-started'));
+      a.play().then(() => setPlaying(true)).catch(() => {});
+    }
+  };
 
   const bars = Array.from({ length: 40 }, (_, i) => ({
     height: 6 + Math.sin(i * 0.7) * 14 + Math.random() * 8,
@@ -419,33 +343,39 @@ function ChatVoiceoverPlayer({ audioUrl, onEnded }) {
     >
       <audio ref={audioRef} src={audioUrl} preload="metadata" />
       <div style={{
-        padding: '20px 24px',
-        border: '2px solid rgba(0,0,0,0.06)',
+        padding: '16px 20px',
+        border: `2px solid ${raw.line}`,
         background: 'rgba(255,255,255,0.4)',
+        display: 'flex', alignItems: 'center', gap: 14,
       }}>
-        <div style={{
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-          marginBottom: 8,
+        <button onClick={toggle} style={{
+          width: 40, height: 40, flexShrink: 0,
+          background: raw.red, border: 'none', cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
-          <div style={{
-            fontSize: 9, fontWeight: 700, color: raw.red, letterSpacing: '0.15em',
-            fontFamily: fonts.body, textTransform: 'uppercase',
-          }}>BRAND STORY NARRATION</div>
-          <div style={{
-            fontSize: 11, color: 'rgba(0,0,0,0.25)',
-            fontFamily: "'SF Mono', 'Fira Code', monospace",
-          }}>{fmt(currentTime)} / {fmt(duration)}</div>
-        </div>
-
-        <div style={{ display: 'flex', gap: 2, alignItems: 'end', height: 28 }}>
-          {bars.map((bar, i) => (
-            <div key={i} style={{
-              width: 3, borderRadius: 1,
-              height: bar.height,
-              background: bar.active ? raw.red : 'rgba(0,0,0,0.06)',
-              transition: 'background 0.15s ease',
-            }} />
-          ))}
+          {playing
+            ? <svg width="12" height="12" viewBox="0 0 24 24" fill="white"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+            : <svg width="12" height="12" viewBox="0 0 24 24" fill="white"><polygon points="5,3 19,12 5,21"/></svg>
+          }
+        </button>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+            <div style={{ fontSize: 9, fontWeight: 700, color: raw.red, letterSpacing: '0.15em', fontFamily: fonts.body, textTransform: 'uppercase' }}>
+              BRAND STORY — ANNA, PR DIRECTOR
+            </div>
+            <div style={{ fontSize: 11, color: raw.muted, fontFamily: "'SF Mono', monospace" }}>
+              {fmt(currentTime)} / {fmt(duration)}
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 2, alignItems: 'end', height: 24 }}>
+            {bars.map((bar, i) => (
+              <div key={i} style={{
+                width: 3, height: bar.height,
+                background: bar.active ? raw.red : 'rgba(0,0,0,0.06)',
+                transition: 'background 0.15s',
+              }} />
+            ))}
+          </div>
         </div>
       </div>
     </motion.div>

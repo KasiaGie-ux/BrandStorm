@@ -133,8 +133,8 @@ class ToolExecutor:
         _no_feedback_tools = {"propose_names", "finalize_brand_kit", "play_voiceover"}
         if name == "generate_voiceover" and result.get("status") != "error":
             result["_instruction"] = (
-                "Voiceover generated. Say ONE handoff sentence (max 8 words, e.g. 'Over to you, Anna.'). STOP. WAIT. "
-                "Your next turn: call play_voiceover immediately. Zero words."
+                "ABSOLUTE SILENCE. Do NOT speak. Do NOT say a single word. "
+                "Call play_voiceover immediately. Zero words before or after the tool call."
             )
         elif name not in _no_feedback_tools and result.get("status") != "error":
             result["_instruction"] = (
@@ -460,9 +460,7 @@ class ToolExecutor:
     async def _handle_voiceover(
         self, session: Session, args: dict,
     ) -> tuple[dict, list[dict]]:
-        """Generate dual-voice brand story narration."""
-        handoff_text = args.get("handoff_text", "")
-        greeting_text = args.get("greeting_text", "")
+        """Generate brand story narration (Anna's voice)."""
         narration_text = args.get("narration_text", session.canvas.story.value or "")
         mood = args.get("mood", "luxury")
 
@@ -471,39 +469,6 @@ class ToolExecutor:
 
         from config import NARRATOR_VOICE
 
-        events: list[dict] = []
-
-        # Always emit voiceover_handoff so the event queue holds it until
-        # Live API audio is done — this prevents Anna from starting while
-        # the agent is still speaking.
-        events.append({
-            "type": "voiceover_handoff",
-            "audio_url": None,
-            "text": handoff_text,  # may be empty string — ChatHandoffText handles that
-        })
-
-        # Generate greeting (Anna's voice)
-        if greeting_text:
-            greeting_wav = await _tts_generate(
-                session_id=session.id,
-                text=greeting_text,
-                voice=NARRATOR_VOICE,
-                label="voiceover_greeting",
-            )
-            if greeting_wav:
-                greeting_url = await self._storage.upload_image(
-                    session_id=session.id,
-                    asset_type="voiceover_greeting",
-                    image_bytes=greeting_wav,
-                    mime_type="audio/wav",
-                )
-                events.append({
-                    "type": "voiceover_greeting",
-                    "audio_url": greeting_url,
-                    "text": greeting_text,
-                })
-
-        # Generate story narration (Anna's voice)
         story_wav = await _tts_generate(
             session_id=session.id,
             text=narration_text,
@@ -511,7 +476,7 @@ class ToolExecutor:
             label="voiceover_story",
         )
         if not story_wav:
-            return {"status": "skipped", "reason": "TTS generation failed"}, events
+            return {"status": "skipped", "reason": "TTS generation failed"}, []
 
         story_url = await self._storage.upload_image(
             session_id=session.id,
@@ -521,14 +486,12 @@ class ToolExecutor:
         )
 
         session.canvas.voiceover.set(story_url, {"story": narration_text[:100], "mood": mood})
-        # Set session.audio_url so ws_receive.py voiceover_playback_done nudge fires
         session.audio_url = story_url
 
-        events.append({
-            "type": "voiceover_story",
-            "audio_url": story_url,
-        })
-        events.append({"type": "canvas_update", "canvas": session.canvas.snapshot()})
+        events: list[dict] = [
+            {"type": "voiceover_story", "audio_url": story_url},
+            {"type": "canvas_update", "canvas": session.canvas.snapshot()},
+        ]
 
         logger.info(f"[{session.id}] generate_voiceover | Story URL: {story_url}")
         return {"status": "success", "audio_url": story_url}, events

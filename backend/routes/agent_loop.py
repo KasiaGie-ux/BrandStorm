@@ -68,6 +68,7 @@ async def agent_loop(
             pass
 
     try:
+
         while True:
             async for message in live_session.receive():
                 logger.info(f"[{session.id}] Live API message | sc={bool(message.server_content)} tool={bool(message.tool_call)} setup={bool(getattr(message, 'setup_complete', None))}")
@@ -75,8 +76,31 @@ async def agent_loop(
                 if message.server_content:
                     sc = message.server_content
 
+                    has_model_turn = bool(sc.model_turn and sc.model_turn.parts)
+                    has_input_tx = bool(getattr(sc, "input_transcription", None))
+                    has_output_tx = bool(getattr(sc, "output_transcription", None))
+                    turn_complete = bool(getattr(sc, "turn_complete", False))
+                    interrupted = bool(getattr(sc, "interrupted", False))
+                    waiting = getattr(sc, "waiting_for_input", None)
+                    gen_complete = getattr(sc, "generation_complete", None)
+                    turn_reason = getattr(sc, "turn_complete_reason", None)
+                    n_parts = len(sc.model_turn.parts) if has_model_turn else 0
+                    part_types = [
+                        ("audio" if (p.inline_data and p.inline_data.mime_type.startswith("audio/")) else "text" if p.text else "other")
+                        for p in sc.model_turn.parts
+                    ] if has_model_turn else []
+                    # Log full output_transcription object for inspection
+                    out_tx_obj = getattr(sc, "output_transcription", None)
+                    out_tx_text = repr(getattr(out_tx_obj, "text", None)[:80]) if out_tx_obj and getattr(out_tx_obj, "text", None) else repr(getattr(out_tx_obj, "text", None))
+                    logger.info(
+                        f"[{session.id}] sc detail | model_turn={has_model_turn} parts={n_parts} "
+                        f"types={part_types} input_tx={has_input_tx} output_tx={has_output_tx} "
+                        f"out_tx_text={out_tx_text} turn_complete={turn_complete} "
+                        f"waiting={waiting} gen_complete={gen_complete} reason={turn_reason} interrupted={interrupted}"
+                    )
+
                     # Barge-in: agent was interrupted by user
-                    if getattr(sc, "interrupted", False):
+                    if interrupted:
                         await send_json(ws, {"type": "agent_audio_interrupted"})
                         continue
 
@@ -88,11 +112,12 @@ async def agent_loop(
                                 if session.pending_tool_response is not None:
                                     logger.info(f"[{session.id}] Watchdog cleared — agent audio started")
                                     session.pending_tool_response = None
-                                await send_json(ws, {
-                                    "type": "agent_audio",
-                                    "data": base64.b64encode(part.inline_data.data).decode(),
-                                    "mime_type": part.inline_data.mime_type,
-                                })
+                                if not session.finalize_in_progress:
+                                    await send_json(ws, {
+                                        "type": "agent_audio",
+                                        "data": base64.b64encode(part.inline_data.data).decode(),
+                                        "mime_type": part.inline_data.mime_type,
+                                    })
 
                     # Input transcription (user speech)
                     if getattr(sc, "input_transcription", None):
@@ -115,7 +140,9 @@ async def agent_loop(
                     # Output transcription (agent speech)
                     if getattr(sc, "output_transcription", None):
                         text = getattr(sc.output_transcription, "text", "")
-                        if text:
+                        finished = getattr(sc.output_transcription, "finished", None)
+                        logger.info(f"[{session.id}] output_tx | text={repr(text[:60]) if text else repr(text)} finished={finished}")
+                        if text and not session.finalize_in_progress:
                             await send_json(ws, {
                                 "type": "agent_text",
                                 "text": text,
@@ -130,7 +157,6 @@ async def agent_loop(
 
                     # Turn complete — always send agent_turn_complete
                     if getattr(sc, "turn_complete", False):
-                        # Agent responded — stop idle keepalive
                         if idle_keepalive_task and not idle_keepalive_task.done():
                             idle_keepalive_task.cancel()
                             idle_keepalive_task = None
@@ -213,6 +239,9 @@ async def agent_loop(
 
                     # Mark pending — tool_watchdog (in ws.py) will nudge if agent stays silent
                     session.pending_tool_response = tool_names[:]
+                    # Suppress second agent speech turn after finalize_brand_kit result
+                    if "finalize_brand_kit" in tool_names:
+                        session.finalize_in_progress = True
                     # Clear next-step dedup guard — tool fired, canvas state will change.
                     # Exception: after generate_image, keep the guard armed with the NEW
                     # canvas key so the agent's first "what do you think?" question is

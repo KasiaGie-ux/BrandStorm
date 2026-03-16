@@ -68,7 +68,7 @@ export default function App() {
     };
     const onEnd = () => {
       setAnnaPlaying(false);
-      setShowGoToSummary(false);
+      // showGoToSummary stays true — button remains visible after Anna finishes
       // Restore mic if it was active before Anna started
       if (micWasActiveRef.current) {
         micWasActiveRef.current = false;
@@ -115,12 +115,17 @@ export default function App() {
   }, [audioPlayback.isPlaying, eventQueue]);
 
 
-  // When pendingResults is set, transition to results after agent audio finishes
+  // When pendingResults is set (finalize_brand_kit spoken but kit not ready),
+  // transition to results after agent audio finishes.
+  const pendingResultsStartedRef = useRef(false);
   useEffect(() => {
     if (!pendingResultsRef.current) return;
-    if (!audioPlayback.isPlaying) {
+    if (audioPlayback.isPlaying) {
+      pendingResultsStartedRef.current = true;
+    } else if (pendingResultsStartedRef.current) {
       pendingResultsRef.current = false;
-      setTimeout(() => setScreen(SCREENS.RESULTS), 3000);
+      pendingResultsStartedRef.current = false;
+      setTimeout(() => setScreen(SCREENS.RESULTS), 1200);
     }
   }, [audioPlayback.isPlaying]);
 
@@ -283,6 +288,7 @@ export default function App() {
         // If agent accidentally speaks context markers, discard silently
         if (event.text && event.text.includes('[CANVAS STATE]')) break;
 
+
         // If empty text, just close any dangling partial without adding new message
         if (!event.text || !event.text.trim()) {
           if (!event.partial) {
@@ -344,13 +350,10 @@ export default function App() {
       case 'canvas_update':
         // Canvas state applied on agent_turn_complete to sync with event queue flush.
         // Applying here mid-turn would hide stale messages before replacements render.
-        // Show "Go to Summary" CTA once Instagram is ready (Anna offer step)
+        // Show "Go to Summary" CTA once Instagram is ready — always clickable (skip Anna entirely)
         if (event.canvas?.instagram?.status === 'ready') {
           setShowGoToSummary(true);
-        }
-        // Voiceover ready from canvas (also set by voiceover_story event)
-        if (event.canvas?.voiceover?.status === 'ready') {
-          setVoiceoverReady(true);
+          setVoiceoverReady(true); // always active — user can skip Anna at any time
         }
         break;
 
@@ -438,16 +441,12 @@ export default function App() {
         generationDoneRef.current = true;
         // Show badge after agent text has rendered (800ms stagger)
         setTimeout(() => addMessage({ type: 'generation_complete' }), 800);
-        // If no voiceover or voiceover already finished → transition after agent audio
-        if (!hasVoiceoverRef.current || voiceoverPlayedRef.current) {
-          if (audioPlayback.isPlaying) {
-            // Agent is speaking closing sentence — wait for it to finish
-            pendingResultsRef.current = true;
-          } else {
-            setTimeout(() => setScreen(SCREENS.RESULTS), 3000);
-          }
+        // Always transition — voiceover is optional, user controls it manually
+        if (audioPlayback.isPlaying) {
+          pendingResultsRef.current = true;
+        } else {
+          setTimeout(() => setScreen(SCREENS.RESULTS), 2500);
         }
-        // Otherwise wait for onVoiceoverEnd callback
         break;
       }
 
@@ -603,27 +602,9 @@ export default function App() {
         wsRef.current?.sendMessage({ type: 'pong' });
         break;
 
-      case 'voiceover_handoff':
-        // voiceover_handoff is in VISUAL_TYPES so the event queue holds it
-        // while Charon's audio plays. By the time this case runs, audio is
-        // already finished — fire Anna's cue immediately.
-        window._voiceoverHandoffDone = true;
-        window.dispatchEvent(new CustomEvent('voiceover-handoff-ended'));
-        break;
-
-      case 'play_anna_voiceover':
-        // Agent called play_voiceover — signal all Anna audio players to start
-        window.dispatchEvent(new CustomEvent('anna-play-now'));
-        break;
-
-      case 'voiceover_greeting':
-        addMessage({ type: 'voiceover_greeting', audio_url: event.audio_url, text: event.text });
-        break;
-
       case 'voiceover_story':
-        // Stop any remaining agent audio before Anna speaks
-        audioPlayback.flush();
-        // Anna's brand story narration — the deliverable
+      case 'voiceover_generated':
+        // Brand story audio ready — store in brandKit, show play button in chat
         setBrandKit(prev => prev ? { ...prev, audio_url: event.audio_url } : { audio_url: event.audio_url });
         hasVoiceoverRef.current = true;
         setVoiceoverReady(true);
@@ -632,18 +613,6 @@ export default function App() {
           micWasActiveRef.current = false;
           window.dispatchEvent(new CustomEvent('resume-mic'));
         }
-        // Dedup: Gemini self-interruption can trigger the tool twice
-        setMessages(prev => {
-          if (prev.some(m => m.type === 'voiceover_story')) return prev;
-          messagesRef.current = [...prev, { type: 'voiceover_story', audio_url: event.audio_url, _id: ++msgIdCounter.current }];
-          return messagesRef.current;
-        });
-        break;
-
-      case 'voiceover_generated':
-        // Legacy single-voice fallback
-        setBrandKit(prev => prev ? { ...prev, audio_url: event.audio_url } : { audio_url: event.audio_url });
-        hasVoiceoverRef.current = true;
         setMessages(prev => {
           if (prev.some(m => m.type === 'voiceover_story')) return prev;
           messagesRef.current = [...prev, { type: 'voiceover_story', audio_url: event.audio_url, _id: ++msgIdCounter.current }];
@@ -702,8 +671,15 @@ export default function App() {
     voiceoverPlayedRef.current = false;
     hasVoiceoverRef.current = false;
     pendingResultsRef.current = false;
+    pendingResultsStartedRef.current = false;
+    window._voiceoverSkipped = false;
+    window._annaPendingPlay = false;
     imageFileRef.current = imageFile;
     contextTextRef.current = contextText || '';
+
+    // Initialize AudioContext now — this is a user gesture (button click).
+    // Must happen here so the context is RUNNING before first agent_audio arrives.
+    audioPlayback.ensureContext();
 
     // Create preview for LaunchSequence + StudioScreen
     const reader = new FileReader();
@@ -724,6 +700,8 @@ export default function App() {
 
   const handleLaunchComplete = useCallback(() => {
     setScreen(SCREENS.STUDIO);
+    // Second user gesture — resume AudioContext if browser suspended it after tab switch
+    audioPlayback.ensureContext();
     if (!sessionId) return;
     
     const sysMsg = { 
@@ -774,6 +752,9 @@ export default function App() {
     voiceoverPlayedRef.current = false;
     hasVoiceoverRef.current = false;
     pendingResultsRef.current = false;
+    pendingResultsStartedRef.current = false;
+    window._voiceoverSkipped = false;
+    window._annaPendingPlay = false;
     setImagePreview(null);
     setFirstAgentText(null);
     setFirstTurnDone(false);
@@ -803,16 +784,14 @@ export default function App() {
   }, []);
 
   const handleGoToSummary = useCallback(() => {
-    // Stop Anna's audio immediately
+    window._voiceoverSkipped = true;
     window.dispatchEvent(new CustomEvent('voiceover-stop'));
     setAnnaPlaying(false);
-    setShowGoToSummary(false);
-    // Mark voiceover as played so finalize can proceed
     voiceoverPlayedRef.current = true;
+    // Tell agent to summarise brand and call finalize_brand_kit
     if (wsRef.current?.sendMessage) {
-      wsRef.current.sendMessage({ type: 'voiceover_playback_done' });
+      wsRef.current.sendMessage({ type: 'go_to_summary' });
     }
-    setScreen(SCREENS.RESULTS);
   }, []);
 
   const handleBack = useCallback(() => {

@@ -81,8 +81,6 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
                     ),
                     "propose_names":      "Narrate each name: ONE sentence per name. End third with 'That's my pick.' STOP. WAIT.",
                 }
-                # generate_voiceover: Anna's narration plays after — agent must NOT speak
-                # until voiceover_playback_done arrives from frontend. Watchdog skips it.
                 _DEFAULT_NUDGE = "ONE sentence reacting. Ask user for feedback. STOP. WAIT."
 
                 try:
@@ -101,10 +99,8 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
                         if session.pending_tool_response is None:
                             continue
                         tool_name = tools[0] if tools else ""
-                        # generate_voiceover: Anna plays after — watchdog must NOT nudge.
-                        # Agent will speak after voiceover_playback_done arrives from frontend.
-                        # propose_names: agent narrates names autonomously — watchdog must NOT nudge.
-                        if tool_name in ("generate_voiceover", "play_voiceover", "propose_names"):
+                        # These tools handle their own flow — watchdog must NOT nudge.
+                        if tool_name in ("generate_voiceover", "propose_names", "finalize_brand_kit"):
                             session.pending_tool_response = None
                             logger.info(f"[{session_id}] Watchdog skipped for {tool_name}")
                             continue
