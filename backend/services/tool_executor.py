@@ -57,7 +57,6 @@ def _resize_image_bytes(
         fmt = "JPEG" if "jpeg" in mime_type or "jpg" in mime_type else "PNG"
         img.save(buf, format=fmt, quality=85)
         out_mime = "image/jpeg" if fmt == "JPEG" else "image/png"
-        logger.info(f"[{session_id}] Resized ref image: {w}x{h} -> {new_w}x{new_h}")
         return buf.getvalue(), out_mime
     except ImportError:
         return img_bytes, mime_type
@@ -93,7 +92,6 @@ class ToolExecutor:
             args = {}
 
         t0 = time.perf_counter()
-        logger.info(f"[{session.id}] Tool: {name} | Args: {list(args.keys())}")
 
         try:
             if name == "set_brand_identity":
@@ -108,8 +106,6 @@ class ToolExecutor:
                 result, events = await self._handle_propose_names(session, args)
             elif name == "generate_voiceover":
                 result, events = await self._handle_voiceover(session, args)
-            elif name == "play_voiceover":
-                result, events = await self._handle_play_voiceover(session)
             elif name == "finalize_brand_kit":
                 result, events = await self._handle_finalize(session)
             else:
@@ -121,26 +117,25 @@ class ToolExecutor:
             events = []
 
         latency = (time.perf_counter() - t0) * 1000
-        logger.info(
-            f"[{session.id}] Tool: {name} | Latency: {latency:.0f}ms | "
-            f"Status: {result.get('status', 'unknown')}"
-        )
 
         # Inject feedback instruction into every tool response.
         # Agent sees this as part of the tool result — enforces ask-then-continue.
         # propose_names is excluded: agent must narrate names first, then wait.
         # finalize_brand_kit is excluded: no next step to ask about.
-        _no_feedback_tools = {"propose_names", "finalize_brand_kit", "play_voiceover"}
-        if name == "generate_voiceover" and result.get("status") != "error":
-            result["_instruction"] = (
-                "ABSOLUTE SILENCE. Do NOT speak. Do NOT say a single word. "
-                "Call play_voiceover immediately. Zero words before or after the tool call."
-            )
-        elif name not in _no_feedback_tools and result.get("status") != "error":
-            result["_instruction"] = (
-                "Follow the exact script for this step. "
-                "ONE sentence. ONE question. STOP."
-            )
+        _no_feedback_tools = {"propose_names", "finalize_brand_kit"}
+        if name not in _no_feedback_tools and result.get("status") != "error":
+            _canvas_update_tools = {"set_brand_identity", "set_palette", "set_fonts"}
+            if name in _canvas_update_tools:
+                result["_instruction"] = (
+                    "ONE sentence confirming the update and telling the user they can see it above. "
+                    "Example: 'Updated — you can check it in the section above.' "
+                    "ONE question asking what to do next. STOP."
+                )
+            else:
+                result["_instruction"] = (
+                    "Follow the exact script for this step. "
+                    "ONE sentence. ONE question. STOP."
+                )
 
         fn_response = types.FunctionResponse(name=name, response=result)
         return fn_response, events
@@ -159,9 +154,14 @@ class ToolExecutor:
 
         if "name" in args and args["name"]:
             old_name = canvas.name.value
+            old_status = canvas.name.status
             canvas.name.set(args["name"], {"source": "agent"})
             fields_updated.append("name")
-            events.append({"type": "brand_name_reveal", "name": args["name"]})
+            # Only emit brand_name_reveal when name is being set for the first time
+            # (was not READY before). On tagline/story updates the agent re-sends
+            # the same name — suppress the reveal card entirely.
+            if old_status != ElementStatus.READY:
+                events.append({"type": "brand_name_reveal", "name": args["name"]})
             # User chose a name — reset flag so re-proposal works if needed
             session.names_proposed = False
             # Name changed — mark dependent elements stale
@@ -199,7 +199,6 @@ class ToolExecutor:
 
         events.append({"type": "canvas_update", "canvas": canvas.snapshot()})
 
-        logger.info(f"[{session.id}] set_brand_identity | Updated: {fields_updated}")
         return {"status": "success", "fields_updated": fields_updated}, events
 
     async def _handle_set_palette(
@@ -232,14 +231,10 @@ class ToolExecutor:
             if el.status == ElementStatus.READY:
                 el.mark_stale()
                 stale_images.append(img_element)
-        if stale_images:
-            logger.info(f"[{session.id}] set_palette | Marked stale: {stale_images}")
-
         events = [
             {"type": "palette_reveal", "mood": mood, "colors": colors},
             {"type": "canvas_update", "canvas": canvas.snapshot()},
         ]
-        logger.info(f"[{session.id}] set_palette | Colors: {len(colors)}")
         return {"status": "success", "colors_count": len(colors)}, events
 
     async def _handle_set_fonts(
@@ -271,7 +266,6 @@ class ToolExecutor:
             },
             {"type": "canvas_update", "canvas": session.canvas.snapshot()},
         ]
-        logger.info(f"[{session.id}] set_fonts | Heading: {heading_font} | Body: {body_font}")
         return {"status": "success"}, events
 
     async def _handle_propose_names(
@@ -299,7 +293,6 @@ class ToolExecutor:
         }
         session.names_proposed = True
         session.proposed_names = [n["name"] for n in validated]
-        logger.info(f"[{session.id}] propose_names | Names: {session.proposed_names}")
         return {"status": "success", "names": [n["name"] for n in validated]}, [
             event,
             {"type": "canvas_update", "canvas": session.canvas.snapshot()},
@@ -385,11 +378,6 @@ class ToolExecutor:
             "prompt_hash": hash(enriched_prompt) % 10**8,
         }
 
-        logger.info(
-            f"[{session.id}] generate_image | AssetType: {asset_type} | Element: {element_name} | "
-            f"Prompt: {len(enriched_prompt)} chars | Refs: {len(ref_images)} | AR: {aspect_ratio}"
-        )
-
         result = await self._image_gen.generate(
             session_id=session.id,
             prompt=enriched_prompt,
@@ -433,7 +421,6 @@ class ToolExecutor:
             # If inputs changed while generating, discard the stale result
             if element.status == ElementStatus.STALE:
                 element.clear()
-                logger.info(f"[{session.id}] Discarding stale {element_name} generation result")
                 events.append({"type": "canvas_update", "canvas": session.canvas.snapshot()})
                 return {"status": "stale", "reason": "Inputs changed during generation"}, events
 
@@ -493,22 +480,7 @@ class ToolExecutor:
             {"type": "canvas_update", "canvas": session.canvas.snapshot()},
         ]
 
-        logger.info(f"[{session.id}] generate_voiceover | Story URL: {story_url}")
         return {"status": "success", "audio_url": story_url}, events
-
-    async def _handle_play_voiceover(
-        self, session: Session,
-    ) -> tuple[dict, list[dict]]:
-        """Signal frontend to start Anna's voiceover playback."""
-        audio_url = session.canvas.voiceover.value
-        if not audio_url:
-            logger.warning(f"[{session.id}] play_voiceover | No voiceover audio available")
-            return {"status": "skipped", "reason": "No voiceover generated yet"}, []
-
-        logger.info(f"[{session.id}] play_voiceover | Triggering playback: {audio_url}")
-        return {"status": "success"}, [
-            {"type": "play_anna_voiceover", "audio_url": audio_url},
-        ]
 
     async def _handle_finalize(
         self, session: Session,
@@ -557,7 +529,4 @@ class ToolExecutor:
             "progress": 1.0,
         }
 
-        logger.info(
-            f"[{session.id}] finalize_brand_kit | Assets: {len(images)} | ZIP: {bool(zip_url)}"
-        )
         return {"status": "success", "zip_url": zip_url}, [event]

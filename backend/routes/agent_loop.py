@@ -71,7 +71,7 @@ async def agent_loop(
 
         while True:
             async for message in live_session.receive():
-                logger.info(f"[{session.id}] Live API message | sc={bool(message.server_content)} tool={bool(message.tool_call)} setup={bool(getattr(message, 'setup_complete', None))}")
+                logger.debug(f"[{session.id}] Live API message | sc={bool(message.server_content)} tool={bool(message.tool_call)} setup={bool(getattr(message, 'setup_complete', None))}")
                 # -- Server content: audio, text, transcription --
                 if message.server_content:
                     sc = message.server_content
@@ -92,7 +92,7 @@ async def agent_loop(
                     # Log full output_transcription object for inspection
                     out_tx_obj = getattr(sc, "output_transcription", None)
                     out_tx_text = repr(getattr(out_tx_obj, "text", None)[:80]) if out_tx_obj and getattr(out_tx_obj, "text", None) else repr(getattr(out_tx_obj, "text", None))
-                    logger.info(
+                    logger.debug(
                         f"[{session.id}] sc detail | model_turn={has_model_turn} parts={n_parts} "
                         f"types={part_types} input_tx={has_input_tx} output_tx={has_output_tx} "
                         f"out_tx_text={out_tx_text} turn_complete={turn_complete} "
@@ -111,7 +111,7 @@ async def agent_loop(
                                 # Agent is producing audio — clear watchdog and opening flag
                                 session.opening_awaiting_response = False
                                 if session.pending_tool_response is not None:
-                                    logger.info(f"[{session.id}] Watchdog cleared — agent audio started")
+                                    logger.debug(f"[{session.id}] Watchdog cleared — agent audio started")
                                     session.pending_tool_response = None
                                 if not session.finalize_in_progress:
                                     await send_json(ws, {
@@ -136,13 +136,13 @@ async def agent_loop(
                                     session.canvas.name.set(chosen)
                                     session.proposed_names = []
                                     session.pending_tool_response = None
-                                    logger.info(f"[{session.id}] Voice name selected: '{chosen}' (from: '{text.strip()}')")
+                                    logger.debug(f"[{session.id}] Voice name selected: '{chosen}' (from: '{text.strip()}')")
 
                     # Output transcription (agent speech)
                     if getattr(sc, "output_transcription", None):
                         text = getattr(sc.output_transcription, "text", "")
                         finished = getattr(sc.output_transcription, "finished", None)
-                        logger.info(f"[{session.id}] output_tx | text={repr(text[:60]) if text else repr(text)} finished={finished}")
+                        logger.debug(f"[{session.id}] output_tx | text={repr(text[:60]) if text else repr(text)} finished={finished}")
                         if text:
                             session.opening_awaiting_response = False
                         if text and not session.finalize_in_progress:
@@ -153,7 +153,7 @@ async def agent_loop(
                             })
                             # Clear watchdog flag — agent is speaking
                             if text.strip() and session.pending_tool_response is not None:
-                                logger.info(
+                                logger.debug(
                                     f"[{session.id}] Watchdog cleared — agent spoke: '{text[:40]}'"
                                 )
                                 session.pending_tool_response = None
@@ -265,7 +265,7 @@ async def agent_loop(
                     except Exception as tre:
                         logger.error(f"[{session.id}] send_tool_response failed: {tre}")
                         raise
-                    logger.info(f"[{session.id}] Batch tool response | Tools: {tool_names}")
+                    logger.debug(f"[{session.id}] Batch tool response | Tools: {tool_names}")
 
                     # Start idle keepalive — keeps Live API session alive while agent processes
                     if idle_keepalive_task and not idle_keepalive_task.done():
@@ -293,7 +293,7 @@ async def agent_loop(
                     else:
                         session.pending_next_step = None
                         session.pending_next_step_canvas_key = None
-                    logger.info(f"[{session.id}] Watchdog armed | Tools: {tool_names}")
+                    logger.debug(f"[{session.id}] Watchdog armed | Tools: {tool_names}")
 
 
         # If we reach here the Live API stream ended (server closed it)

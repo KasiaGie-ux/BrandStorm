@@ -52,7 +52,7 @@ async def upload_product_image(file: UploadFile = File(...)):
         image_bytes=image_bytes,
         mime_type=mime_type,
     )
-    logger.info(
+    logger.debug(
         f"[{session_id}] Image uploaded | Size: {len(image_bytes) / 1024:.0f}KB | Type: {mime_type}"
     )
     return {"session_id": session_id, "image_url": url}

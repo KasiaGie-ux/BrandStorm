@@ -24,9 +24,9 @@ class StorageService:
     def __init__(self) -> None:
         if not USE_GCS:
             LOCAL_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-            logger.info(f"Storage: local mode → {LOCAL_ASSETS_DIR}")
+            logger.debug(f"Storage: local mode → {LOCAL_ASSETS_DIR}")
         else:
-            logger.info("Storage: GCS mode")
+            logger.debug("Storage: GCS mode")
 
     async def upload_image(
         self,
@@ -46,7 +46,7 @@ class StorageService:
             url = self._save_local(filename, image_bytes, session_id)
 
         latency = (time.perf_counter() - t0) * 1000
-        logger.info(
+        logger.debug(
             f"[{session_id}] Phase: GENERATING | Action: asset_uploaded | "
             f"Asset: {asset_type} | Size: {len(image_bytes) / 1024:.0f}KB | "
             f"Latency: {latency:.0f}ms"
@@ -91,7 +91,7 @@ class StorageService:
             url = self._save_local(zip_filename, zip_bytes, session_id)
 
         latency = (time.perf_counter() - t0) * 1000
-        logger.info(
+        logger.debug(
             f"[{session_id}] Phase: COMPLETE | Action: zip_created | "
             f"Size: {len(zip_bytes) / 1024:.0f}KB | Assets: {len(asset_urls)} | "
             f"Latency: {latency:.0f}ms"

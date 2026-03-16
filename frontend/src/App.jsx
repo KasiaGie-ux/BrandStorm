@@ -319,6 +319,7 @@ export default function App() {
         }
 
         // --- Normal turns (> first turn) ---
+        setPhase(p => p === 'INIT' || p === 'ANALYZING' ? 'PROPOSING' : p);
         turnActiveRef.current = true;
         setMessages(prev => {
           let updatedText = event.text;
@@ -390,6 +391,7 @@ export default function App() {
 
       case 'tool_invoked':
         if (event.phase) setPhase(event.phase);
+        else if (event.tool === 'analyze_product') setPhase('ANALYZING');
         addMessage({ type: 'tool_invoked', tool: event.tool, args: event.args || {}, phase: event.phase });
         {
 

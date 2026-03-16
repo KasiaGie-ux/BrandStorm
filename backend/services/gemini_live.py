@@ -234,7 +234,7 @@ def create_client() -> genai.Client:
     """Create a Vertex AI genai client with ADC."""
     import os
     os.environ.setdefault("GOOGLE_CLOUD_PROJECT", GCP_PROJECT)
-    logger.info(f"Creating genai client | Project: {GCP_PROJECT} | Location: {GCP_LOCATION}")
+    logger.debug(f"Creating genai client | Project: {GCP_PROJECT} | Location: {GCP_LOCATION}")
     return genai.Client(
         vertexai=True,
         project=GCP_PROJECT,
@@ -246,7 +246,7 @@ def create_client() -> genai.Client:
 def build_live_config() -> types.LiveConnectConfig:
     """Build the LiveConnectConfig with all tools and system prompt."""
     tool_names = [fd.name for fd in TOOL_DECLARATIONS.function_declarations]
-    logger.info(
+    logger.debug(
         f"Building LiveConnectConfig | Tools: {len(tool_names)} | Names: {tool_names}"
     )
 

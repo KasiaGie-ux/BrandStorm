@@ -102,10 +102,6 @@ async def _tts_generate(
         return None
 
     t0 = time.perf_counter()
-    logger.info(
-        f"[{session_id}] Phase: GENERATING | Action: {label}_starting | "
-        f"Voice: {voice} | Text length: {len(text)}"
-    )
 
     try:
         client = genai.Client(
@@ -143,12 +139,6 @@ async def _tts_generate(
                 if part.inline_data and part.inline_data.mime_type.startswith("audio/"):
                     raw_pcm = part.inline_data.data
                     wav_bytes = _wrap_pcm_as_wav(raw_pcm)
-                    latency = (time.perf_counter() - t0) * 1000
-                    logger.info(
-                        f"[{session_id}] Phase: GENERATING | Action: {label}_success | "
-                        f"Voice: {voice} | PCM: {len(raw_pcm)} bytes | "
-                        f"WAV: {len(wav_bytes)} bytes | Latency: {latency:.0f}ms"
-                    )
                     return wav_bytes
 
         logger.warning(

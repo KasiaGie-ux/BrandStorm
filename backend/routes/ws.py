@@ -35,7 +35,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str, token: str = Query(
         await ws.close(code=4401)
         return
     await ws.accept()
-    logger.info(f"[{session_id}] WebSocket connected")
+    logger.debug(f"[{session_id}] WebSocket connected")
 
     session = brand_state.create_session(session_id)
     stop_event = brand_state.register_teardown_event(session_id)
@@ -47,13 +47,13 @@ async def websocket_endpoint(ws: WebSocket, session_id: str, token: str = Query(
 
     try:
         live_config = build_live_config()
-        logger.info(f"[{session_id}] Connecting to Live API | Model: {LIVE_API_MODEL}")
+        logger.debug(f"[{session_id}] Connecting to Live API | Model: {LIVE_API_MODEL}")
 
         async with client.aio.live.connect(
             model=LIVE_API_MODEL,
             config=live_config,
         ) as live_session:
-            logger.info(f"[{session_id}] Live API connected")
+            logger.debug(f"[{session_id}] Live API connected")
 
             # Settle delay — Live API needs time before it can generate audio
             # on the first turn. Without this, the first send_client_content may
@@ -119,7 +119,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str, token: str = Query(
                         # These tools handle their own flow — watchdog must NOT nudge.
                         if tool_name in ("generate_voiceover", "propose_names", "finalize_brand_kit"):
                             session.pending_tool_response = None
-                            logger.info(f"[{session_id}] Watchdog skipped for {tool_name}")
+                            logger.debug(f"[{session_id}] Watchdog skipped for {tool_name}")
                             continue
                         nudge_instruction = _NUDGE_PER_TOOL.get(tool_name, _DEFAULT_NUDGE)
                         nudge_text = _build_ctx(
@@ -127,7 +127,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str, token: str = Query(
                             trigger="tool_result",
                             details=f"Tool '{tool_name}' result delivered. {nudge_instruction}",
                         )
-                        logger.info(
+                        logger.debug(
                             f"[{session_id}] Tool watchdog fired | Tool: {tool_name} | Elapsed: {timeout}s"
                         )
                         session.pending_tool_response = None
@@ -165,7 +165,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str, token: str = Query(
 
             async def _stop_watcher():
                 await stop_event.wait()
-                logger.info(f"[{session_id}] Connection superseded")
+                logger.debug(f"[{session_id}] Connection superseded")
 
             stop_task = asyncio.create_task(_stop_watcher(), name="stop_watcher")
 
@@ -196,7 +196,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str, token: str = Query(
         for task_name, task in list(session.background_tasks.items()):
             if hasattr(task, 'done') and not task.done():
                 task.cancel()
-                logger.info(f"[{session_id}] Cancelled background task: {task_name}")
+                logger.debug(f"[{session_id}] Cancelled background task: {task_name}")
         brand_state.clear_teardown_event(session_id, stop_event)
         brand_state.remove_session(session_id)
-        logger.info(f"[{session_id}] Session ended")
+        logger.debug(f"[{session_id}] Session ended")

@@ -51,7 +51,6 @@ def _get_global_client() -> genai.Client:
             location="global",
             http_options=types.HttpOptions(api_version="v1beta1"),
         )
-        logger.info("ImageGenerator: created global-endpoint client for preview models")
     return _global_client
 
 
@@ -62,7 +61,6 @@ def _get_dev_client() -> genai.Client | None:
         return None
     if _dev_client is None:
         _dev_client = genai.Client(api_key=GEMINI_API_KEY)
-        logger.info("ImageGenerator: created Developer API client")
     return _dev_client
 
 
@@ -102,11 +100,6 @@ class ImageGenerator:
         for attempt in range(max_attempts):
             t0 = time.perf_counter()
             try:
-                logger.info(
-                    f"[{session_id}] Phase: GENERATING | Action: image_gen_start | "
-                    f"Model: {label} ({model_name}) | Asset: {asset_type} | "
-                    f"Attempt: {attempt + 1}/{max_attempts} | Endpoint: {endpoint_tag}"
-                )
                 response = await asyncio.wait_for(
                     client.aio.models.generate_content(
                         model=model_name,
@@ -134,11 +127,6 @@ class ImageGenerator:
                     )
                     return None
 
-                logger.info(
-                    f"[{session_id}] Phase: GENERATING | Action: image_generated | "
-                    f"Model: {label} | Asset: {asset_type} | Latency: {latency:.0f}ms | "
-                    f"Size: {len(image_data.data) / 1024:.0f}KB"
-                )
                 return {
                     "status": "success",
                     "asset_type": asset_type,
@@ -170,10 +158,6 @@ class ImageGenerator:
                 )
                 if is_429 and attempt < max_attempts - 1:
                     wait = BACKOFF_SECS[attempt] if attempt < len(BACKOFF_SECS) else 4
-                    logger.info(
-                        f"[{session_id}] Phase: GENERATING | Action: 429_backoff | "
-                        f"Model: {label} | Wait: {wait}s"
-                    )
                     await asyncio.sleep(wait)
                     continue  # retry same model
                 return None  # non-429 or retries exhausted → next step
@@ -208,11 +192,6 @@ class ImageGenerator:
             for img_bytes, img_mime in reference_images:
                 contents.append(types.Part.from_bytes(data=img_bytes, mime_type=img_mime))
             contents.append(types.Part.from_text(text=full_prompt))
-            logger.info(
-                f"[{session_id}] Phase: GENERATING | Action: image_gen_with_refs | "
-                f"Asset: {asset_type} | Ref images: {len(reference_images)} | "
-                f"Sizes: {[len(r[0])//1024 for r in reference_images]}KB"
-            )
         else:
             contents = full_prompt
 

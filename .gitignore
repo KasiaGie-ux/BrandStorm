@@ -32,8 +32,11 @@ Thumbs.db
 # Project-local config (not for version control)
 .claude/
 CLAUDE.md
-*.md
 docs/
+
+# Markdown docs — exclude all except project root README
+*.md
+!README.md
 
 # Generated assets (session-specific binary output)
 backend/generated_assets/
