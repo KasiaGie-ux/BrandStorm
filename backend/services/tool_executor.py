@@ -94,8 +94,8 @@ class ToolExecutor:
                 result, events = await self._handle_generate_image(session, args)
             elif name == "propose_names":
                 result, events = await self._handle_propose_names(session, args)
-            elif name == "generate_voiceover":
-                result, events = await self._handle_voiceover(session, args)
+            elif name == "invoke_brand_story_agent":
+                result, events = await self._handle_invoke_brand_story_agent(session, args)
             elif name == "finalize_brand_kit":
                 result, events = await self._handle_finalize(session)
             elif name == "delegate_to_specialist":
@@ -407,78 +407,91 @@ class ToolExecutor:
         events.append({"type": "canvas_update", "canvas": session.canvas.snapshot()})
         return result, events
 
-    async def _handle_voiceover(
+    async def _handle_invoke_brand_story_agent(
         self, session: Session, args: dict,
     ) -> tuple[dict, list[dict]]:
-        """Generate dual-voice brand story narration."""
-        handoff_text = args.get("handoff_text", "")
-        greeting_text = args.get("greeting_text", "")
-        narration_text = args.get("narration_text", session.canvas.story.value or "")
+        """Summon Anna — the brand story Live API agent.
+
+        Immediately starts Anna's Live API session in the background so she is
+        ready by the time Charon finishes his handoff sentence. The frontend
+        connects to /ws/{session_id}/anna which drains Anna's audio output.
+        """
+        import asyncio as _asyncio
+        from prompts.anna import build_anna_prompt
+        from services.gemini_live import build_anna_config, create_client
+
+        script = args.get("script", session.canvas.story.value or "")
         mood = args.get("mood", "luxury")
 
-        if not narration_text:
-            return {"status": "skipped", "reason": "No narration text"}, []
+        if not script:
+            return {"status": "skipped", "reason": "No script provided"}, []
 
-        from config import NARRATOR_VOICE
+        session.anna_script = script
+        session.anna_mood = mood
+        session.anna_done_event.clear()
+        session.anna_ws_connected.clear()
 
-        events: list[dict] = []
+        logger.info(f"[{session.id}] invoke_brand_story_agent | Mood: {mood} | Script: {len(script)} chars")
 
-        # Emit handoff text event (Charon already spoke it via Live API audio)
-        if handoff_text:
-            events.append({
-                "type": "voiceover_handoff",
-                "audio_url": None,
-                "text": handoff_text,
-            })
+        brand_name = session.canvas.name.value or "Brand"
+        anna_prompt = build_anna_prompt(script=script, mood=mood, brand_name=brand_name)
+        anna_config = build_anna_config(anna_prompt)
+        client = create_client()
 
-        # Generate greeting (Anna's voice)
-        if greeting_text:
-            greeting_wav = await _tts_generate(
-                session_id=session.id,
-                text=greeting_text,
-                voice=NARRATOR_VOICE,
-                label="voiceover_greeting",
-            )
-            if greeting_wav:
-                greeting_url = await self._storage.upload_image(
-                    session_id=session.id,
-                    asset_type="voiceover_greeting",
-                    image_bytes=greeting_wav,
-                    mime_type="audio/wav",
-                )
-                events.append({
-                    "type": "voiceover_greeting",
-                    "audio_url": greeting_url,
-                    "text": greeting_text,
-                })
+        async def _run_anna():
+            from services.anna_bridge import run_anna_bridge
+            from google.genai import types as gtypes
+            session_id = session.id
+            try:
+                async with client.aio.live.connect(
+                    model="gemini-live-2.5-flash-native-audio",
+                    config=anna_config,
+                ) as anna_live:
+                    session.anna_live_session = anna_live
+                    logger.info(f"[{session_id}] Anna Live API pre-connected (waiting for frontend WS)")
 
-        # Generate story narration (Anna's voice)
-        story_wav = await _tts_generate(
-            session_id=session.id,
-            text=narration_text,
-            voice=NARRATOR_VOICE,
-            label="voiceover_story",
-        )
-        if not story_wav:
-            return {"status": "skipped", "reason": "TTS generation failed"}, events
+                    # Wait for frontend WS to connect before sending cue (max 15s)
+                    try:
+                        await _asyncio.wait_for(session.anna_ws_connected.wait(), timeout=15.0)
+                    except _asyncio.TimeoutError:
+                        logger.warning(f"[{session_id}] Anna WS never connected — sending cue anyway")
 
-        story_url = await self._storage.upload_image(
-            session_id=session.id,
-            asset_type="voiceover_story",
-            image_bytes=story_wav,
-            mime_type="audio/wav",
-        )
+                    # Send handoff cue — Anna starts speaking
+                    await anna_live.send_client_content(
+                        turns=[gtypes.Content(
+                            role="user",
+                            parts=[gtypes.Part.from_text(
+                                text='Charon says: "Anna, the stage is yours." — Begin your narration now.'
+                            )],
+                        )],
+                        turn_complete=True,
+                    )
+                    logger.info(f"[{session_id}] Anna cue sent")
 
-        session.canvas.voiceover.set(story_url, {"story": narration_text[:100], "mood": mood})
+                    # Bridge audio until Anna signals done
+                    frontend_ws = getattr(session, "_anna_frontend_ws", None)
+                    main_ws_send = getattr(session, "_anna_main_ws_send", None)
+                    if frontend_ws and main_ws_send:
+                        await run_anna_bridge(
+                            session=session,
+                            anna_live_session=anna_live,
+                            frontend_ws=frontend_ws,
+                            main_ws_send=main_ws_send,
+                        )
+                    else:
+                        # Frontend WS not yet set — wait for anna_done_event as fallback
+                        await _asyncio.wait_for(session.anna_done_event.wait(), timeout=120.0)
+            except Exception as e:
+                logger.error(f"[{session_id}] Anna background task error: {e}")
+                session.anna_done_event.set()
+            finally:
+                session.anna_live_session = None
 
-        events.append({
-            "type": "voiceover_story",
-            "audio_url": story_url,
-        })
-        events.append({"type": "canvas_update", "canvas": session.canvas.snapshot()})
+        task = _asyncio.create_task(_run_anna())
+        session.background_tasks["anna"] = task
 
-        logger.info(f"[{session.id}] generate_voiceover | Story URL: {story_url}")
-        return {"status": "success", "audio_url": story_url}, events
+        events = [{"type": "anna_ready", "session_id": session.id}]
+        return {"status": "ready", "message": "Anna is starting. Go silent — she will speak."}, events
 
     async def _handle_finalize(
         self, session: Session,

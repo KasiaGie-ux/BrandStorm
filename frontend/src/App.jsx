@@ -7,6 +7,7 @@ import StudioScreen from './components/StudioScreen';
 import ResultsScreen from './components/ResultsScreen';
 import useWebSocket from './hooks/useWebSocket';
 import useAudioPlayback from './hooks/useAudioPlayback';
+import useAnnaSession from './hooks/useAnnaSession';
 import useEventQueue from './hooks/useEventQueue';
 import { raw, easeCurve } from './styles/tokens';
 
@@ -27,6 +28,7 @@ export default function App() {
   const [firstTurnDone, setFirstTurnDone] = useState(false);
   const launchTextRef = useRef('');
   const launchIntroRef = useRef(null); // { opener, intro } — used by stripKnownIntro
+  const sessionIdRef = useRef(null);
   const imageFileRef = useRef(null);
   const contextTextRef = useRef('');
   const generationTimeoutRef = useRef(null);
@@ -39,8 +41,10 @@ export default function App() {
   const hasVoiceoverRef = useRef(false);
   const pendingResultsRef = useRef(false); // waiting for agent audio to finish before results
 
-  // Audio playback for agent voice
+  // Audio playback for agent voice (Charon)
   const audioPlayback = useAudioPlayback();
+  // Anna brand story agent session
+  const anna = useAnnaSession();
   const wasPlayingRef = useRef(false);
   const audioDoneTimerRef = useRef(null);
   const wsRef = useRef(null);
@@ -48,8 +52,9 @@ export default function App() {
   // Used by useEventQueue to gate visual event rendering until the turn ends.
   const turnActiveRef = useRef(false);
 
-  // Keep screenRef in sync for use inside callbacks (avoids stale closures)
+  // Keep screenRef and sessionIdRef in sync for use inside callbacks (avoids stale closures)
   useEffect(() => { screenRef.current = screen; }, [screen]);
+  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
 
   // processEventRef: stable ref to handleWsMessage for the event queue.
   // Set after handleWsMessage is defined (below).
@@ -526,42 +531,16 @@ export default function App() {
       case 'ping':
         break;
 
-      case 'voiceover_handoff':
-        // voiceover_handoff is in VISUAL_TYPES so the event queue holds it
-        // while Charon's audio plays. By the time this case runs, audio is
-        // already finished — fire Anna's cue immediately.
-        window._voiceoverHandoffDone = true;
-        window.dispatchEvent(new CustomEvent('voiceover-handoff-ended'));
+      case 'anna_ready':
+        // Charon invoked invoke_brand_story_agent — open Anna's WebSocket.
+        // Do NOT flush Charon's audio here — he may still be speaking the handoff sentence.
+        anna.open(sessionIdRef.current);
         break;
 
-      case 'voiceover_greeting':
-        // Anna's greeting — auto-plays before story narration
-        addMessage({ type: 'voiceover_greeting', audio_url: event.audio_url, text: event.text });
-        break;
-
-      case 'voiceover_story':
-        // Stop any remaining agent audio before Anna speaks
-        audioPlayback.flush();
-        // Anna's brand story narration — the deliverable
-        setBrandKit(prev => prev ? { ...prev, audio_url: event.audio_url } : { audio_url: event.audio_url });
-        hasVoiceoverRef.current = true;
-        // Dedup: Gemini self-interruption can trigger the tool twice
-        setMessages(prev => {
-          if (prev.some(m => m.type === 'voiceover_story')) return prev;
-          messagesRef.current = [...prev, { type: 'voiceover_story', audio_url: event.audio_url, _id: ++msgIdCounter.current }];
-          return messagesRef.current;
-        });
-        break;
-
-      case 'voiceover_generated':
-        // Legacy single-voice fallback
-        setBrandKit(prev => prev ? { ...prev, audio_url: event.audio_url } : { audio_url: event.audio_url });
-        hasVoiceoverRef.current = true;
-        setMessages(prev => {
-          if (prev.some(m => m.type === 'voiceover_story')) return prev;
-          messagesRef.current = [...prev, { type: 'voiceover_story', audio_url: event.audio_url, _id: ++msgIdCounter.current }];
-          return messagesRef.current;
-        });
+      case 'anna_done':
+        // Anna finished narrating (signal came from backend via main_ws_send).
+        // Close Anna's WS — do NOT send anna_done back to backend (it already knows).
+        anna.close();
         break;
 
       case 'session_timeout':

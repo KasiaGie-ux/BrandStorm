@@ -44,6 +44,18 @@ class Session:
     # Event signaling that the frontend has finished playing agent audio
     audio_playback_event: asyncio.Event = field(default_factory=asyncio.Event)
 
+    # Anna brand story agent — populated when invoke_brand_story_agent is called
+    anna_script: str = ""
+    anna_mood: str = "luxury"
+    anna_live_session: Any = None   # Live API session for Anna
+    anna_done_event: asyncio.Event = field(default_factory=asyncio.Event)
+    # Set by anna_loop when frontend WS connects — bridge waits before sending cue
+    anna_ws_connected: asyncio.Event = field(default_factory=asyncio.Event)
+    # Queue for bridging Charon audio → Anna input
+    charon_audio_queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+    # Charon's live session — stored so anna_bridge can inject Anna's audio into it
+    charon_live_session: Any = None
+
     def add_transcript(self, role: str, text: str) -> None:
         self.transcript.append({"role": role, "text": text, "ts": time.time()})
         self.updated_at = time.time()

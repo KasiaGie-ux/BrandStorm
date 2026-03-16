@@ -179,34 +179,29 @@ TOOL_DECLARATIONS = types.Tool(
             ),
         ),
 
-        # 6. GENERATE_VOICEOVER — dual-voice brand story narration
+        # 6. INVOKE_BRAND_STORY_AGENT — summon Anna to deliver the brand story
         types.FunctionDeclaration(
-            name="generate_voiceover",
+            name="invoke_brand_story_agent",
             description=(
-                "Generate brand story voiceover with two voices. "
-                "Call after visual assets are ready, before finalize."
+                "Summon Anna — the brand story agent — to narrate the brand story directly "
+                "to the user. Call after all visual assets are ready. "
+                "Say your handoff line BEFORE calling this tool, then go silent. "
+                "Anna will speak. After she finishes you will receive an anna_done signal."
             ),
             parameters=types.Schema(
                 type=types.Type.OBJECT,
                 properties={
-                    "handoff_text": types.Schema(
+                    "script": types.Schema(
                         type=types.Type.STRING,
-                        description="Your handoff line introducing Anna (1 sentence).",
-                    ),
-                    "greeting_text": types.Schema(
-                        type=types.Type.STRING,
-                        description="Anna's greeting intro (1-2 sentences).",
-                    ),
-                    "narration_text": types.Schema(
-                        type=types.Type.STRING,
-                        description="Anna's full brand story narration.",
+                        description="The full brand story text for Anna to narrate (she will paraphrase naturally).",
                     ),
                     "mood": types.Schema(
                         type=types.Type.STRING,
                         enum=["luxury", "modern", "eco", "energetic", "gentle", "edgy"],
+                        description="Emotional tone for Anna's delivery.",
                     ),
                 },
-                required=["handoff_text", "narration_text", "mood"],
+                required=["script", "mood"],
             ),
         ),
 
@@ -303,6 +298,26 @@ def build_live_config() -> types.LiveConnectConfig:
         ),
     )
     return config
+
+
+def build_anna_config(anna_prompt: str) -> types.LiveConnectConfig:
+    """Build LiveConnectConfig for Anna — no tools, pure narration."""
+    from config import NARRATOR_VOICE
+    return types.LiveConnectConfig(
+        response_modalities=[types.Modality.AUDIO],
+        system_instruction=types.Content(
+            parts=[types.Part.from_text(text=anna_prompt)]
+        ),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name=NARRATOR_VOICE,
+                )
+            ),
+            language_code="en-US",
+        ),
+    )
 
 
 def image_bytes_to_part(image_bytes: bytes, mime_type: str = "image/jpeg") -> types.Part:

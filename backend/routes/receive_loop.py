@@ -100,11 +100,14 @@ async def receive_loop(
                     turn_complete=True,
                 )
 
-            elif msg_type == "voiceover_playback_done":
+            elif msg_type == "anna_done":
+                # Anna finished her brand story narration.
+                # Signal the session and nudge Charon to finalize.
+                session.anna_done_event.set()
                 context = build_context_message(
                     session,
-                    trigger="voiceover_playback_complete",
-                    details="The brand story narration has finished playing. You may finalize the brand kit.",
+                    trigger="anna_done",
+                    details="Anna has finished the brand story narration. Call finalize_brand_kit now.",
                 )
                 await live_session.send_client_content(
                     turns=[types.Content(

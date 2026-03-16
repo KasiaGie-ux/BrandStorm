@@ -18,6 +18,7 @@ from services.tool_executor import ToolExecutor
 
 from routes.agent_loop import agent_loop, send_json
 from routes.receive_loop import receive_loop
+from routes.anna_loop import anna_websocket
 
 logger = logging.getLogger("brand-agent")
 router = APIRouter()
@@ -30,6 +31,7 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
     logger.info(f"[{session_id}] WebSocket connected")
 
     session = brand_state.create_session(session_id)
+    session._main_ws = ws  # Store ref so anna_bridge can post events back
     stop_event = brand_state.register_teardown_event(session_id)
 
     client = create_client()
@@ -46,6 +48,8 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
             config=live_config,
         ) as live_session:
             logger.info(f"[{session_id}] Live API connected")
+            # Store Charon's live session so anna_bridge can inject Anna's audio into it
+            session.charon_live_session = live_session
 
             await send_json(ws, {"type": "session_ready"})
 
@@ -106,3 +110,26 @@ async def websocket_endpoint(ws: WebSocket, session_id: str):
         brand_state.clear_teardown_event(session_id, stop_event)
         brand_state.remove_session(session_id)
         logger.info(f"[{session_id}] Session ended")
+
+
+@router.websocket("/ws/{session_id}/anna")
+async def anna_websocket_endpoint(ws: WebSocket, session_id: str):
+    """Anna brand story agent WebSocket — opened by frontend on anna_ready event."""
+    from services.brand_state import get_session
+
+    session = get_session(session_id)
+    if not session:
+        await ws.accept()
+        await ws.close(code=4004, reason="Session not found")
+        return
+
+    # main_ws_send: post events back to the main Charon WS
+    # We look up the main WS via brand_state — sessions store their ws ref
+    async def main_ws_send(data: dict) -> None:
+        if hasattr(session, "_main_ws") and session._main_ws:
+            try:
+                await session._main_ws.send_json(data)
+            except Exception:
+                pass
+
+    await anna_websocket(ws, session, main_ws_send)

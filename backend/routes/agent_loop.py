@@ -59,11 +59,18 @@ async def agent_loop(
                     if sc.model_turn and sc.model_turn.parts:
                         for part in sc.model_turn.parts:
                             if part.inline_data and part.inline_data.mime_type.startswith("audio/"):
+                                pcm = part.inline_data.data
                                 await send_json(ws, {
                                     "type": "agent_audio",
-                                    "data": base64.b64encode(part.inline_data.data).decode(),
+                                    "data": base64.b64encode(pcm).decode(),
                                     "mime_type": part.inline_data.mime_type,
                                 })
+                                # If Anna bridge is active, forward Charon's audio to her
+                                if session.anna_live_session and not session.anna_done_event.is_set():
+                                    try:
+                                        session.charon_audio_queue.put_nowait(pcm)
+                                    except Exception:
+                                        pass
 
                     # Input transcription (user speech)
                     if getattr(sc, "input_transcription", None):
@@ -137,15 +144,20 @@ async def agent_loop(
                     # HOWEVER, we cannot `await` it here directly, because that blocks this `receive()`
                     # generator, starving the frontend of the remaining audio chunks!
                     # Therefore, we spawn a background task to wait and send the response.
-                    async def delayed_response(responses, names) -> None:
-                        logger.info(f"[{session.id}] Waiting for frontend audio_playback_done before sending tool response...")
-                        try:
-                            await asyncio.wait_for(session.audio_playback_event.wait(), timeout=30.0)
-                            logger.info(f"[{session.id}] Audio playback finished, proceeding with tool response.")
-                        except asyncio.TimeoutError:
-                            logger.warning(f"[{session.id}] Timeout waiting for audio_playback_done. Proceeding anyway.")
-                        # Clear immediately so the next tool call's delayed_response must wait fresh.
-                        session.audio_playback_event.clear()
+                    # invoke_brand_story_agent: Charon goes silent after this call,
+                    # so frontend will never send audio_playback_done. Skip the wait.
+                    skip_audio_wait = any(n == "invoke_brand_story_agent" for n in tool_names)
+
+                    async def delayed_response(responses, names, skip_wait) -> None:
+                        if not skip_wait:
+                            logger.info(f"[{session.id}] Waiting for frontend audio_playback_done before sending tool response...")
+                            try:
+                                await asyncio.wait_for(session.audio_playback_event.wait(), timeout=30.0)
+                                logger.info(f"[{session.id}] Audio playback finished, proceeding with tool response.")
+                            except asyncio.TimeoutError:
+                                logger.warning(f"[{session.id}] Timeout waiting for audio_playback_done. Proceeding anyway.")
+                            # Clear immediately so the next tool call's delayed_response must wait fresh.
+                            session.audio_playback_event.clear()
 
                         # Return ALL tool results to Live API in one batch.
                         # Canvas context is embedded in each FunctionResponse.response
@@ -159,7 +171,7 @@ async def agent_loop(
                         logger.info(f"[{session.id}] Batch tool response | Tools: {names}")
                     
                     # Fire and forget
-                    asyncio.create_task(delayed_response(all_responses, tool_names))
+                    asyncio.create_task(delayed_response(all_responses, tool_names, skip_audio_wait))
 
                     # The Live API will autonomously generate the next turn 
                     # based on the tool responses.
