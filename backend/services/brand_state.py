@@ -24,7 +24,6 @@ def register_teardown_event(session_id: str) -> asyncio.Event:
     existing = _active_teardowns.get(session_id)
     if existing and not existing.is_set():
         existing.set()
-        logger.info(f"[{session_id}] Superseded old connection")
     ev = asyncio.Event()
     _active_teardowns[session_id] = ev
     return ev
@@ -42,16 +41,13 @@ def create_session(session_id: str | None = None) -> Session:
     if session_id and session_id in _completed:
         session = _completed.pop(session_id)
         _sessions[session.id] = session
-        logger.info(f"[{session.id}] Session restored")
         return session
 
     if session_id and session_id in _sessions:
-        logger.info(f"[{session_id}] Session reused")
         return _sessions[session_id]
 
     session = Session() if session_id is None else Session(id=session_id)
     _sessions[session.id] = session
-    logger.info(f"[{session.id}] Session created")
     return session
 
 
@@ -63,7 +59,6 @@ def remove_session(session_id: str) -> None:
     session = _sessions.pop(session_id, None)
     if session:
         _completed[session_id] = session
-        logger.info(f"[{session_id}] Session archived")
 
 
 def get_all_sessions() -> dict[str, dict]:

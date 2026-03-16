@@ -10,17 +10,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from config import PORT, HOST
+from config import PORT, HOST, LOG_LEVEL
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+logging.basicConfig(level=getattr(logging, LOG_LEVEL.upper(), logging.WARNING), format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("brand-agent")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("BrandStorm starting up")
     yield
-    logger.info("BrandStorm shutting down")
 
 
 app = FastAPI(title="BrandStorm", version="5.0", lifespan=lifespan)

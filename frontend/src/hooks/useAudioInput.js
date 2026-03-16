@@ -88,7 +88,7 @@ export default function useAudioInput({ onChunk }) {
       if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
         setPermissionDenied(true);
       } else {
-        console.error('[useAudioInput] Failed to start:', e);
+        setPermissionDenied(true);
       }
     }
   }, [onChunk, float32ToPcm16Base64]);

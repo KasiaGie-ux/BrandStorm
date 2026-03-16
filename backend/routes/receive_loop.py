@@ -189,7 +189,7 @@ async def receive_loop(
                     )
                     trigger = "name_selected"
                     session.pending_tool_response = None
-                    logger.info(f"[{session.id}] Name selected: '{chosen}' (from: '{text}')")
+                    logger.debug(f"[{session.id}] Name selected: '{chosen}' (from: '{text}')")
                 elif "user has entered the studio" in lower:
                     details = (
                         "User has entered the Studio. Execute Step 2 of your flow:\n"
@@ -213,7 +213,7 @@ async def receive_loop(
                         # else (e.g. palette change, tagline change) — don't inject [NEXT STEP].
                         if (session.pending_next_step is not None
                                 and canvas_key == session.pending_next_step_canvas_key):
-                            logger.info(
+                            logger.debug(
                                 f"[{session.id}] Affirmation — same canvas state, "
                                 f"sending as user_approved without NEXT STEP (agent is mid-conversation)"
                             )
@@ -227,7 +227,7 @@ async def receive_loop(
                             session.pending_next_step_canvas_key = canvas_key
                             details = f"User said: '{text}'\n[NEXT STEP] {next_step}"
                             trigger = "user_approved"
-                            logger.info(
+                            logger.debug(
                                 f"[{session.id}] Affirmation detected | "
                                 f"Canvas next step resolved | Trigger: user_approved"
                             )
@@ -288,7 +288,7 @@ async def receive_loop(
                 session.product_image_bytes = image_bytes
                 session.product_image_mime = mime_type
 
-                logger.info(
+                logger.debug(
                     f"[{session.id}] Image upload | Size: {len(image_bytes)} bytes | "
                     f"MIME: {mime_type}"
                 )
@@ -337,6 +337,6 @@ async def receive_loop(
             # Ignore ping, keepalive, and unknown message types
 
     except WebSocketDisconnect:
-        logger.info(f"[{session.id}] WebSocket disconnected")
+        logger.debug(f"[{session.id}] WebSocket disconnected")
     except Exception as e:
         logger.error(f"[{session.id}] receive_loop error: {e}")

@@ -1,4 +1,5 @@
 """Configuration — all settings from environment variables."""
+import logging
 import os
 
 # GCP
@@ -11,14 +12,9 @@ IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gemini-3.1-flash-image-preview")    # pr
 IMAGE_MODEL_FALLBACK = os.getenv("IMAGE_MODEL_FALLBACK", "gemini-2.5-flash-image")  # Nano Banana — faster, GA
 IMAGE_MODEL_FALLBACK_2 = os.getenv("IMAGE_MODEL_FALLBACK_2", "gemini-2.0-flash-preview-image-generation")  # Flash image gen — separate quota
 
-# === Text / Reasoning ===
-TEXT_MODEL = os.getenv("TEXT_MODEL", "gemini-2.5-pro")                      # Stable, GA — 3.1-pro-preview not available in all projects
-TEXT_MODEL_FALLBACK = os.getenv("TEXT_MODEL_FALLBACK", "gemini-2.5-pro")    # Stable, GA
 
 # === Live API (voice conversation) ===
 LIVE_API_MODEL = os.getenv("LIVE_API_MODEL", "gemini-live-2.5-flash-native-audio")  # Vertex AI GA — native audio, function calling, 30 voices
-LIVE_API_MODEL_DEV = os.getenv("LIVE_API_MODEL_DEV", "gemini-2.5-flash-native-audio-preview-12-2025")  # Dev API preview
-LIVE_API_FALLBACK = os.getenv("LIVE_API_FALLBACK", "gemini-2.5-flash")      # Basic Live API, worse voice
 LIVE_API_VOICE = os.getenv("LIVE_API_VOICE", "Charon")                     # Voice name for Live API (Charon, Kore, Fenrir, Aoede, Puck, etc.)
 NARRATOR_VOICE = os.getenv("NARRATOR_VOICE", "Kore")                      # Voice for brand story narration (Anna/Kore — warm, polished female voice)
 
@@ -49,3 +45,10 @@ ACCESS_TOKEN = os.getenv("ACCESS_TOKEN", "")
 # Server
 PORT = int(os.getenv("PORT", "8080"))
 HOST = os.getenv("HOST", "0.0.0.0")
+
+# Logging — DEBUG locally, WARNING in production
+LOG_LEVEL = os.getenv("LOG_LEVEL", "WARNING")
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL.upper(), logging.WARNING),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
